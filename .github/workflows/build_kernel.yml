@@ -1,0 +1,298 @@
+name: Build Xiaomi SM8550 Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      device:
+        description: "目标设备（对应 arch/arm64/configs/vendor/<device>_GKI.config）"
+        required: true
+        default: "fuxi"
+        type: choice
+        options:
+          - fuxi
+          - nuwa
+          - socrates
+          - vermeer
+          - gki_only
+      build_dtbs:
+        description: "拉取 LineageOS sm8550-devicetrees 并编译设备树（DTB）"
+        required: false
+        default: true
+        type: boolean
+      enable_lto:
+        description: "Clang LTO 优化模式（GitHub Runner 建议 thin 或 none，避免内存不足）"
+        required: false
+        default: "thin"
+        type: choice
+        options:
+          - thin
+          - full
+          - none
+      package_anykernel3:
+        description: "使用 AnyKernel3 打包可刷入 ZIP"
+        required: false
+        default: true
+        type: boolean
+      upload_release:
+        description: "将构建产物发布到 GitHub Releases"
+        required: false
+        default: false
+        type: boolean
+
+  push:
+    branches:
+      - lineage-24.0
+    tags:
+      - "v*"
+    paths-ignore:
+      - "README*"
+      - "Documentation/**"
+      - ".github/**"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  KERNEL_DIR: sm8550
+  DT_DIR: sm8550-devicetrees
+  OUT_DIR: out
+  ANYKERNEL_REPO: https://github.com/osm0sis/AnyKernel3.git
+  CLANG_BRANCH: android14-release
+
+jobs:
+  build:
+    name: Build SM8550 Kernel (${{ inputs.device || 'fuxi' }})
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: 释放 Runner 磁盘空间
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h
+
+      - name: 安装编译依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache cpio curl device-tree-compiler \
+            flex git kmod libelf-dev libncurses5 libssl-dev libtinfo5 \
+            lz4 python3 rsync tar unzip wget xz-utils zip zstd
+
+      - name: 拉取内核源码
+        uses: actions/checkout@v4
+        with:
+          path: ${{ env.KERNEL_DIR }}
+          fetch-depth: 1
+
+      - name: 拉取配套设备树仓库（sm8550-devicetrees）
+        if: ${{ inputs.build_dtbs != false }}
+        uses: actions/checkout@v4
+        with:
+          repository: LineageOS/android_kernel_xiaomi_sm8550-devicetrees
+          ref: lineage-24.0
+          path: ${{ env.DT_DIR }}
+          fetch-depth: 1
+
+      - name: 校验设备树符号链接
+        if: ${{ inputs.build_dtbs != false }}
+        run: |
+          # 源码中 arch/arm64/boot/dts/vendor 指向 ../../../../../sm8550-devicetrees
+          ls -la "${{ env.KERNEL_DIR }}/arch/arm64/boot/dts/vendor"
+          test -d "${{ env.KERNEL_DIR }}/arch/arm64/boot/dts/vendor"
+
+      - name: 解析构建参数与 Clang 版本
+        id: meta
+        run: |
+          DEVICE="${{ inputs.device || 'fuxi' }}"
+          LTO_MODE="${{ inputs.enable_lto || 'thin' }}"
+          BUILD_DTBS="${{ inputs.build_dtbs != false && 'true' || 'false' }}"
+          PACKAGE_AK3="${{ inputs.package_anykernel3 != false && 'true' || 'false' }}"
+
+          CLANG_VERSION="r450784e"
+          if [ -f "${{ env.KERNEL_DIR }}/build.config.constants" ]; then
+            DETECTED=$(grep -E '^CLANG_VERSION=' "${{ env.KERNEL_DIR }}/build.config.constants" | cut -d'=' -f2 | tr -d '[:space:]')
+            if [ -n "${DETECTED}" ]; then
+              CLANG_VERSION="${DETECTED}"
+            fi
+          fi
+
+          SHORT_SHA=$(git -C "${{ env.KERNEL_DIR }}" rev-parse --short HEAD)
+          BUILD_DATE=$(date +%Y%m%d-%H%M)
+
+          {
+            echo "device=${DEVICE}"
+            echo "lto_mode=${LTO_MODE}"
+            echo "build_dtbs=${BUILD_DTBS}"
+            echo "package_ak3=${PACKAGE_AK3}"
+            echo "clang_version=${CLANG_VERSION}"
+            echo "short_sha=${SHORT_SHA}"
+            echo "build_date=${BUILD_DATE}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Device: ${DEVICE}, LTO: ${LTO_MODE}, Clang: ${CLANG_VERSION}, Commit: ${SHORT_SHA}"
+
+      - name: 缓存 AOSP Clang 工具链
+        id: clang-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/toolchain/clang
+          key: aosp-clang-${{ env.CLANG_BRANCH }}-${{ steps.meta.outputs.clang_version }}
+
+      - name: 下载 AOSP Clang 工具链
+        if: steps.clang-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "${{ github.workspace }}/toolchain/clang"
+          CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/${{ env.CLANG_BRANCH }}/clang-${{ steps.meta.outputs.clang_version }}.tar.gz"
+          echo "Downloading Clang from: ${CLANG_URL}"
+          curl -fSL "${CLANG_URL}" | tar -xz -C "${{ github.workspace }}/toolchain/clang"
+
+      - name: 缓存 ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-sm8550-${{ steps.meta.outputs.device }}-${{ github.sha }}
+          restore-keys: |
+            ccache-sm8550-${{ steps.meta.outputs.device }}-
+            ccache-sm8550-
+
+      - name: 配置内核（defconfig 合并与 LTO 选项）
+        working-directory: ${{ env.KERNEL_DIR }}
+        run: |
+          export PATH="${{ github.workspace }}/toolchain/clang/bin:${PATH}"
+          export KBUILD_BUILD_USER="github-actions"
+          export KBUILD_BUILD_HOST="sm8550-ci"
+
+          MAKE_ARGS=(
+            O="${{ env.OUT_DIR }}"
+            ARCH=arm64
+            SUBARCH=arm64
+            CC="ccache clang"
+            HOSTCC=clang
+            HOSTCXX=clang++
+            LLVM=1
+            LLVM_IAS=1
+            DEPMOD=depmod
+            DTC_EXT="$(command -v dtc)"
+          )
+
+          CONFIG_FRAGMENTS=(gki_defconfig vendor/kalama_GKI.config)
+          if [ "${{ steps.meta.outputs.device }}" != "gki_only" ]; then
+            DEVICE_CFG="vendor/${{ steps.meta.outputs.device }}_GKI.config"
+            test -f "arch/arm64/configs/${DEVICE_CFG}"
+            CONFIG_FRAGMENTS+=("${DEVICE_CFG}")
+          fi
+
+          echo "Merging configs: ${CONFIG_FRAGMENTS[*]}"
+          make -j"$(nproc)" "${MAKE_ARGS[@]}" "${CONFIG_FRAGMENTS[@]}"
+
+          case "${{ steps.meta.outputs.lto_mode }}" in
+            thin)
+              ./scripts/config --file "${{ env.OUT_DIR }}/.config" \
+                -d LTO_NONE -d LTO_CLANG_FULL -e LTO_CLANG_THIN
+              ;;
+            full)
+              ./scripts/config --file "${{ env.OUT_DIR }}/.config" \
+                -d LTO_NONE -d LTO_CLANG_THIN -e LTO_CLANG_FULL
+              ;;
+            none)
+              ./scripts/config --file "${{ env.OUT_DIR }}/.config" \
+                -d LTO_CLANG_THIN -d LTO_CLANG_FULL -e LTO_NONE
+              ;;
+          esac
+
+          make -j"$(nproc)" "${MAKE_ARGS[@]}" olddefconfig
+
+      - name: 编译内核镜像、模块与设备树
+        working-directory: ${{ env.KERNEL_DIR }}
+        run: |
+          export PATH="${{ github.workspace }}/toolchain/clang/bin:${PATH}"
+          export KBUILD_BUILD_USER="github-actions"
+          export KBUILD_BUILD_HOST="sm8550-ci"
+          ccache -M 4G
+          ccache -z
+
+          MAKE_ARGS=(
+            O="${{ env.OUT_DIR }}"
+            ARCH=arm64
+            SUBARCH=arm64
+            CC="ccache clang"
+            HOSTCC=clang
+            HOSTCXX=clang++
+            LLVM=1
+            LLVM_IAS=1
+            DEPMOD=depmod
+            DTC_EXT="$(command -v dtc)"
+          )
+
+          BUILD_TARGETS=(Image modules)
+          if [ "${{ steps.meta.outputs.build_dtbs }}" = "true" ]; then
+            BUILD_TARGETS+=(dtbs)
+          fi
+
+          make -j"$(nproc)" "${MAKE_ARGS[@]}" "${BUILD_TARGETS[@]}"
+          ccache -s
+
+      - name: 收集构建产物并打包 AnyKernel3
+        id: package
+        run: |
+          DIST_DIR="${{ github.workspace }}/dist"
+          BOOT_OUT="${{ github.workspace }}/${{ env.KERNEL_DIR }}/${{ env.OUT_DIR }}/arch/arm64/boot"
+          mkdir -p "${DIST_DIR}"
+
+          cp "${BOOT_OUT}/Image" "${DIST_DIR}/Image"
+          cp "${{ github.workspace }}/${{ env.KERNEL_DIR }}/${{ env.OUT_DIR }}/.config" "${DIST_DIR}/defconfig_used"
+
+          KERNEL_VER=$(cat "${{ github.workspace }}/${{ env.KERNEL_DIR }}/${{ env.OUT_DIR }}/include/config/kernel.release" 2>/dev/null || echo "5.15-sm8550")
+          echo "kernel_release=${KERNEL_VER}" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ steps.meta.outputs.build_dtbs }}" = "true" ] && [ -d "${BOOT_OUT}/dts" ]; then
+            find "${BOOT_OUT}/dts" -name '*.dtb' -exec cat {} + > "${DIST_DIR}/dtb" || true
+            if [ ! -s "${DIST_DIR}/dtb" ]; then
+              rm -f "${DIST_DIR}/dtb"
+            fi
+          fi
+
+          if [ "${{ steps.meta.outputs.package_ak3 }}" = "true" ]; then
+            git clone --depth=1 "${{ env.ANYKERNEL_REPO }}" "${{ github.workspace }}/AnyKernel3"
+            cd "${{ github.workspace }}/AnyKernel3"
+            rm -rf .git README.md
+            cp "${DIST_DIR}/Image" ./Image
+            if [ -f "${DIST_DIR}/dtb" ]; then
+              cp "${DIST_DIR}/dtb" ./dtb
+            fi
+
+            sed -i 's/do\.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+            sed -i 's|block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;|block=auto;|g' anykernel.sh
+            sed -i 's/is_slot_device=0;/is_slot_device=1;/g' anykernel.sh
+
+            ZIP_NAME="AnyKernel3-sm8550-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.build_date }}-${{ steps.meta.outputs.short_sha }}.zip"
+            zip -r9 "${DIST_DIR}/${ZIP_NAME}" ./* -x "*.zip"
+            echo "zip_name=${ZIP_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+          ls -lh "${DIST_DIR}"
+
+      - name: 上传构建产物（Artifact）
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-sm8550-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.short_sha }}
+          path: ${{ github.workspace }}/dist/*
+          retention-days: 14
+
+      - name: 发布 GitHub Release（可选）
+        if: startsWith(github.ref, 'refs/tags/') || inputs.upload_release == true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('build-{0}-{1}', steps.meta.outputs.device, steps.meta.outputs.build_date) }}
+          name: "Xiaomi SM8550 Kernel (${{ steps.meta.outputs.device }}) - ${{ steps.package.outputs.kernel_release }}"
+          body: |
+            - **设备配置**: `${{ steps.meta.outputs.device }}`
+            - **内核版本**: `${{ steps.package.outputs.kernel_release }}`
+            - **LTO 模式**: `${{ steps.meta.outputs.lto_mode }}`
+            - **Clang 版本**: `${{ steps.meta.outputs.clang_version }}`
+            - **源码提交**: `${{ github.sha }}`
+          files: ${{ github.workspace }}/dist/*
