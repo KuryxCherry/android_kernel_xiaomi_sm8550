@@ -6,18 +6,27 @@ on:
       device:
         description: "目标设备（对应 arch/arm64/configs/vendor/<device>_GKI.config）"
         required: true
-        default: "fuxi"
+        default: "socrates"
         type: choice
         options:
+          - socrates
           - fuxi
           - nuwa
-          - socrates
           - vermeer
           - gki_only
-      build_dtbs:
-        description: "拉取 LineageOS sm8550-devicetrees 并编译设备树（DTB）"
+      ksu_variant:
+        description: "Root 方案集成（源码默认不含 KernelSU）"
         required: false
-        default: true
+        default: "none"
+        type: choice
+        options:
+          - none
+          - kernelsu-next
+          - kernelsu
+      build_dtbs:
+        description: "同时编译设备树（SM8550 GKI 刷入 AnyKernel3 仅需 Image，建议保持关闭）"
+        required: false
+        default: false
         type: boolean
       enable_lto:
         description: "Clang LTO 优化模式（GitHub Runner 建议 thin 或 none，避免内存不足）"
@@ -59,13 +68,14 @@ concurrency:
 env:
   KERNEL_DIR: sm8550
   DT_DIR: sm8550-devicetrees
+  MODULES_DIR: sm8550-modules
   OUT_DIR: out
   ANYKERNEL_REPO: https://github.com/osm0sis/AnyKernel3.git
   CLANG_BRANCH: android14-release
 
 jobs:
   build:
-    name: Build SM8550 Kernel (${{ inputs.device || 'fuxi' }})
+    name: Build SM8550 Kernel (${{ inputs.device || 'socrates' }})
     runs-on: ubuntu-22.04
 
     steps:
@@ -88,8 +98,8 @@ jobs:
           path: ${{ env.KERNEL_DIR }}
           fetch-depth: 1
 
-      - name: 拉取配套设备树仓库（sm8550-devicetrees）
-        if: ${{ inputs.build_dtbs != false }}
+      - name: 拉取配套设备树仓库（sm8550-devicetrees，仅开启 build_dtbs 时）
+        if: ${{ inputs.build_dtbs == true }}
         uses: actions/checkout@v4
         with:
           repository: LineageOS/android_kernel_xiaomi_sm8550-devicetrees
@@ -97,19 +107,33 @@ jobs:
           path: ${{ env.DT_DIR }}
           fetch-depth: 1
 
-      - name: 校验设备树符号链接
-        if: ${{ inputs.build_dtbs != false }}
+      - name: 拉取外部模块仓库以补齐设备树头文件（sm8550-modules，仅开启 build_dtbs 时）
+        if: ${{ inputs.build_dtbs == true }}
+        uses: actions/checkout@v4
+        with:
+          repository: LineageOS/android_kernel_xiaomi_sm8550-modules
+          ref: lineage-24.0
+          path: ${{ env.MODULES_DIR }}
+          fetch-depth: 1
+
+      - name: 校验设备树软链接并同步 vendor dt-bindings 头文件
+        if: ${{ inputs.build_dtbs == true }}
         run: |
-          # 源码中 arch/arm64/boot/dts/vendor 指向 ../../../../../sm8550-devicetrees
           ls -la "${{ env.KERNEL_DIR }}/arch/arm64/boot/dts/vendor"
           test -d "${{ env.KERNEL_DIR }}/arch/arm64/boot/dts/vendor"
+          # 将 sm8550-modules 内的 bindings/dt-bindings 头文件同步到 dtc 头文件搜索路径，解决 bindings/qcom,audio-ext-clk.h 缺失
+          mkdir -p "${{ env.KERNEL_DIR }}/scripts/dtc/include-prefixes/bindings"
+          mkdir -p "${{ env.KERNEL_DIR }}/scripts/dtc/include-prefixes/dt-bindings"
+          find "${{ env.MODULES_DIR }}" -type d -name "bindings" -exec sh -c 'cp -rn "$1"/* "$2"/ 2>/dev/null || true' _ {} "${{ env.KERNEL_DIR }}/scripts/dtc/include-prefixes/bindings" \;
+          find "${{ env.MODULES_DIR }}" -type d -name "dt-bindings" -exec sh -c 'cp -rn "$1"/* "$2"/ 2>/dev/null || true' _ {} "${{ env.KERNEL_DIR }}/scripts/dtc/include-prefixes/dt-bindings" \;
 
       - name: 解析构建参数与 Clang 版本
         id: meta
         run: |
-          DEVICE="${{ inputs.device || 'fuxi' }}"
+          DEVICE="${{ inputs.device || 'socrates' }}"
+          KSU_VARIANT="${{ inputs.ksu_variant || 'none' }}"
           LTO_MODE="${{ inputs.enable_lto || 'thin' }}"
-          BUILD_DTBS="${{ inputs.build_dtbs != false && 'true' || 'false' }}"
+          BUILD_DTBS="${{ inputs.build_dtbs == true && 'true' || 'false' }}"
           PACKAGE_AK3="${{ inputs.package_anykernel3 != false && 'true' || 'false' }}"
 
           CLANG_VERSION="r450784e"
@@ -125,6 +149,7 @@ jobs:
 
           {
             echo "device=${DEVICE}"
+            echo "ksu_variant=${KSU_VARIANT}"
             echo "lto_mode=${LTO_MODE}"
             echo "build_dtbs=${BUILD_DTBS}"
             echo "package_ak3=${PACKAGE_AK3}"
@@ -133,7 +158,20 @@ jobs:
             echo "build_date=${BUILD_DATE}"
           } >> "$GITHUB_OUTPUT"
 
-          echo "Device: ${DEVICE}, LTO: ${LTO_MODE}, Clang: ${CLANG_VERSION}, Commit: ${SHORT_SHA}"
+          echo "Device=${DEVICE} | KSU=${KSU_VARIANT} | LTO=${LTO_MODE} | DTBS=${BUILD_DTBS} | Clang=${CLANG_VERSION} | Commit=${SHORT_SHA}"
+
+      - name: 集成 KernelSU / KernelSU-Next（可选）
+        if: ${{ steps.meta.outputs.ksu_variant != 'none' }}
+        working-directory: ${{ env.KERNEL_DIR }}
+        run: |
+          case "${{ steps.meta.outputs.ksu_variant }}" in
+            kernelsu-next)
+              curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
+              ;;
+            kernelsu)
+              curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
+              ;;
+          esac
 
       - name: 缓存 AOSP Clang 工具链
         id: clang-cache
@@ -154,8 +192,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.ccache
-          key: ccache-sm8550-${{ steps.meta.outputs.device }}-${{ github.sha }}
+          key: ccache-sm8550-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.ksu_variant }}-${{ github.sha }}
           restore-keys: |
+            ccache-sm8550-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.ksu_variant }}-
             ccache-sm8550-${{ steps.meta.outputs.device }}-
             ccache-sm8550-
 
@@ -204,9 +243,13 @@ jobs:
               ;;
           esac
 
+          if [ "${{ steps.meta.outputs.ksu_variant }}" != "none" ]; then
+            ./scripts/config --file "${{ env.OUT_DIR }}/.config" -e KSU -e KPROBES -e OVERLAY_FS
+          fi
+
           make -j"$(nproc)" "${MAKE_ARGS[@]}" olddefconfig
 
-      - name: 编译内核镜像、模块与设备树
+      - name: 编译内核镜像、模块与可选设备树
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
           export PATH="${{ github.workspace }}/toolchain/clang/bin:${PATH}"
@@ -269,7 +312,12 @@ jobs:
             sed -i 's|block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;|block=auto;|g' anykernel.sh
             sed -i 's/is_slot_device=0;/is_slot_device=1;/g' anykernel.sh
 
-            ZIP_NAME="AnyKernel3-sm8550-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.build_date }}-${{ steps.meta.outputs.short_sha }}.zip"
+            KSU_TAG=""
+            if [ "${{ steps.meta.outputs.ksu_variant }}" != "none" ]; then
+              KSU_TAG="-${{ steps.meta.outputs.ksu_variant }}"
+            fi
+
+            ZIP_NAME="AnyKernel3-sm8550-${{ steps.meta.outputs.device }}${KSU_TAG}-${{ steps.meta.outputs.build_date }}-${{ steps.meta.outputs.short_sha }}.zip"
             zip -r9 "${DIST_DIR}/${ZIP_NAME}" ./* -x "*.zip"
             echo "zip_name=${ZIP_NAME}" >> "$GITHUB_OUTPUT"
           fi
@@ -279,7 +327,7 @@ jobs:
       - name: 上传构建产物（Artifact）
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-sm8550-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.short_sha }}
+          name: kernel-sm8550-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.ksu_variant }}-${{ steps.meta.outputs.short_sha }}
           path: ${{ github.workspace }}/dist/*
           retention-days: 14
 
@@ -292,6 +340,7 @@ jobs:
           body: |
             - **设备配置**: `${{ steps.meta.outputs.device }}`
             - **内核版本**: `${{ steps.package.outputs.kernel_release }}`
+            - **KernelSU 方案**: `${{ steps.meta.outputs.ksu_variant }}`
             - **LTO 模式**: `${{ steps.meta.outputs.lto_mode }}`
             - **Clang 版本**: `${{ steps.meta.outputs.clang_version }}`
             - **源码提交**: `${{ github.sha }}`
