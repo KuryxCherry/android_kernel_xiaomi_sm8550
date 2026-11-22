@@ -89,8 +89,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bc bison build-essential ccache cpio curl device-tree-compiler \
-            flex git kmod libelf-dev libncurses5 libssl-dev libtinfo5 \
+            dwarves flex git kmod libelf-dev libncurses5 libssl-dev libtinfo5 \
             lz4 python3 rsync tar unzip wget xz-utils zip zstd
+          pahole --version
 
       - name: 拉取内核源码
         uses: actions/checkout@v4
