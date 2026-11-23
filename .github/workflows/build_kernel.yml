@@ -31,8 +31,22 @@ on:
           - none
           - kernelsu-next
           - kernelsu
+      enable_lto:
+        description: "Clang LTO 模式（默认 full + 极限防失联保护；想更快可选 thin）"
+        required: false
+        default: "full"
+        type: choice
+        options:
+          - full
+          - thin
+          - none
+      disable_debug_info:
+        description: "关闭 DEBUG_INFO/BTF（默认保留完整 BTF；若极限模式仍 OOM 再勾选此项）"
+        required: false
+        default: false
+        type: boolean
       build_modules:
-        description: "同时编译内核模块（单刷 AnyKernel3 仅需 Image，关闭可提速并大幅降内存）"
+        description: "同时编译内核模块（单刷 AnyKernel3 仅需 Image，关闭可提速并降内存）"
         required: false
         default: false
         type: boolean
@@ -41,15 +55,6 @@ on:
         required: false
         default: false
         type: boolean
-      enable_lto:
-        description: "Clang LTO 模式（默认 full 与真机一致；若想更快可选 thin）"
-        required: false
-        default: "full"
-        type: choice
-        options:
-          - full
-          - thin
-          - none
       package_anykernel3:
         description: "使用 AnyKernel3 打包可刷入 ZIP"
         required: false
@@ -90,6 +95,7 @@ jobs:
     name: Build SM8550 Kernel (${{ inputs.device || 'socrates' }} / ${{ inputs.clang_toolchain || 'r596125' }} / ${{ inputs.enable_lto || 'full' }})
     # Ubuntu 24.04 自带 dwarves (pahole 1.25)，与真机 CONFIG_PAHOLE_VERSION=125 对齐
     runs-on: ubuntu-24.04
+    timeout-minutes: 350
 
     steps:
       - name: 释放 Runner 磁盘空间
@@ -97,22 +103,37 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h
 
-      - name: 挂载 20GB 高速 Swap（Full LTO 防 OOM 与 Runner 失联）
+      - name: 配置 ZRAM 压缩内存 + 24GB 磁盘 Swap（Full LTO 极限防 OOM 与防失联）
         if: ${{ (inputs.enable_lto || 'full') == 'full' }}
         run: |
-          # 优先使用独立临时盘 /mnt，避免挤占根分区导致磁盘耗尽
+          # 1. 优先尝试开启 16GB ZRAM (ZSTD/LZ4，高优先级 pri=100)，对 LLVM IR/DWARF 压缩比高且远快于磁盘
+          if sudo modprobe zram 2>/dev/null; then
+            ZRAM_DEV=$(sudo zramctl --find --size 16G --algorithm zstd 2>/dev/null || sudo zramctl --find --size 16G --algorithm lz4 2>/dev/null || true)
+            if [ -n "${ZRAM_DEV}" ]; then
+              sudo mkswap "${ZRAM_DEV}"
+              sudo swapon -p 100 "${ZRAM_DEV}"
+              echo "Enabled ZRAM swap on ${ZRAM_DEV} (priority 100)"
+            fi
+          else
+            echo "ZRAM kernel module unavailable on this runner, falling back to disk swap only."
+          fi
+
+          # 2. 挂载 24GB 磁盘 Swap (低优先级 pri=10) 作为最终兜底，优先放在独立临时盘 /mnt
           MNT_AVAIL_GB=$(df -BG --output=avail /mnt 2>/dev/null | tail -1 | tr -dc '0-9' || echo 0)
-          if [ "${MNT_AVAIL_GB:-0}" -ge 24 ]; then
+          if [ "${MNT_AVAIL_GB:-0}" -ge 28 ]; then
             SWAP_PATH="/mnt/swapfile"
           else
             SWAP_PATH="/swapfile"
           fi
-          echo "Creating 20GB swap at ${SWAP_PATH} (/mnt avail: ${MNT_AVAIL_GB}G)"
-          sudo fallocate -l 20G "${SWAP_PATH}"
+          echo "Creating 24GB disk swap at ${SWAP_PATH} (/mnt avail: ${MNT_AVAIL_GB}G)"
+          sudo fallocate -l 24G "${SWAP_PATH}"
           sudo chmod 600 "${SWAP_PATH}"
           sudo mkswap "${SWAP_PATH}"
-          sudo swapon "${SWAP_PATH}"
-          sudo sysctl -w vm.swappiness=60
+          sudo swapon -p 10 "${SWAP_PATH}"
+
+          # 降低 Swap 预读抖动，优先回收不活跃页
+          sudo sysctl -w vm.swappiness=100 vm.page-cluster=0
+          swapon --show
           free -h
 
       - name: 安装编译依赖（含 pahole 1.25）
@@ -165,6 +186,7 @@ jobs:
           CLANG_VERSION="${{ inputs.clang_toolchain || 'r596125' }}"
           KSU_VARIANT="${{ inputs.ksu_variant || 'none' }}"
           LTO_MODE="${{ inputs.enable_lto || 'full' }}"
+          DISABLE_DEBUG_INFO="${{ inputs.disable_debug_info == true && 'true' || 'false' }}"
           BUILD_MODULES="${{ inputs.build_modules == true && 'true' || 'false' }}"
           BUILD_DTBS="${{ inputs.build_dtbs == true && 'true' || 'false' }}"
           PACKAGE_AK3="${{ inputs.package_anykernel3 != false && 'true' || 'false' }}"
@@ -182,6 +204,7 @@ jobs:
             echo "device=${DEVICE}"
             echo "ksu_variant=${KSU_VARIANT}"
             echo "lto_mode=${LTO_MODE}"
+            echo "disable_debug_info=${DISABLE_DEBUG_INFO}"
             echo "build_modules=${BUILD_MODULES}"
             echo "build_dtbs=${BUILD_DTBS}"
             echo "package_ak3=${PACKAGE_AK3}"
@@ -191,7 +214,7 @@ jobs:
             echo "build_date=${BUILD_DATE}"
           } >> "$GITHUB_OUTPUT"
 
-          echo "Device=${DEVICE} | Clang=${CLANG_VERSION} | LTO=${LTO_MODE} | KSU=${KSU_VARIANT} | MODULES=${BUILD_MODULES} | DTBS=${BUILD_DTBS} | Commit=${SHORT_SHA}"
+          echo "Device=${DEVICE} | Clang=${CLANG_VERSION} | LTO=${LTO_MODE} | NoDebugInfo=${DISABLE_DEBUG_INFO} | KSU=${KSU_VARIANT} | Commit=${SHORT_SHA}"
 
       - name: 集成 KernelSU / KernelSU-Next（可选）
         if: ${{ steps.meta.outputs.ksu_variant != 'none' }}
@@ -281,13 +304,20 @@ jobs:
               ;;
           esac
 
+          if [ "${{ steps.meta.outputs.disable_debug_info }}" = "true" ]; then
+            echo "Disabling DEBUG_INFO and DEBUG_INFO_BTF to minimize Full LTO memory usage"
+            ./scripts/config --file "${{ env.OUT_DIR }}/.config" \
+              -d DEBUG_INFO -d DEBUG_INFO_DWARF4 -d DEBUG_INFO_DWARF5 \
+              -d DEBUG_INFO_BTF -d DEBUG_INFO_BTF_MODULES
+          fi
+
           if [ "${{ steps.meta.outputs.ksu_variant }}" != "none" ]; then
             ./scripts/config --file "${{ env.OUT_DIR }}/.config" -e KSU -e KPROBES -e OVERLAY_FS
           fi
 
           make -j"$(nproc)" "${MAKE_ARGS[@]}" olddefconfig
 
-      - name: 编译内核镜像（以及可选模块与设备树）
+      - name: 编译内核镜像（含内存监控与低优先级限流保护）
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
           export PATH="${{ github.workspace }}/toolchain/clang/bin:${PATH}"
@@ -309,16 +339,38 @@ jobs:
             DTC_EXT="$(command -v dtc)"
           )
 
-          # 使用 nice -n 10 降低编译进程优先级，避免 Full LTO 链接阶段饿死 GitHub Runner 心跳进程
-          # 先单独编译 Image，避免与 modules 并行抢占内存
-          nice -n 10 make -j"$(nproc)" "${MAKE_ARGS[@]}" Image
+          JOBS="$(nproc)"
+          if [ "${{ steps.meta.outputs.lto_mode }}" = "full" ]; then
+            # Full LTO 极限保护：降编译并发为 2，且通过包装器强制 ld.lld 单线程链接以压低峰值内存
+            JOBS=2
+            cat <<EOF > /tmp/ld.lld-1t
+          #!/usr/bin/env bash
+          exec "${{ github.workspace }}/toolchain/clang/bin/ld.lld" --threads=1 "\$@"
+          EOF
+            chmod +x /tmp/ld.lld-1t
+            MAKE_ARGS+=(LD="/tmp/ld.lld-1t")
+          fi
+
+          # 在同一步骤内启动轻量内存/Swap 实时监控，便于定位峰值占用，退出时自动清理
+          (
+            while true; do
+              sleep 60
+              echo "[MEM-MON $(date -u +%H:%M:%S)] $(free -h | awk '/Mem:/{printf "RAM %s/%s (avail %s)", $3,$2,$7} /Swap:/{printf " | Swap %s/%s", $3,$2}')"
+              ps -eo comm,rss --sort=-rss | head -n 4 | awk 'NR>1{printf "  top: %s %.1fGB\n", $1, $2/1048576}'
+            done
+          ) &
+          MON_PID=$!
+          trap 'kill "${MON_PID}" 2>/dev/null || true' EXIT
+
+          # 使用 ionice -c 3 (空闲级 I/O) + nice -n 19 (最低 CPU 优先级)，彻底避免拖死 Runner 心跳进程
+          ionice -c 3 nice -n 19 make -j"${JOBS}" "${MAKE_ARGS[@]}" Image
 
           if [ "${{ steps.meta.outputs.build_modules }}" = "true" ]; then
-            nice -n 10 make -j"$(nproc)" "${MAKE_ARGS[@]}" modules
+            ionice -c 3 nice -n 19 make -j"${JOBS}" "${MAKE_ARGS[@]}" modules
           fi
 
           if [ "${{ steps.meta.outputs.build_dtbs }}" = "true" ]; then
-            nice -n 10 make -j"$(nproc)" "${MAKE_ARGS[@]}" dtbs
+            ionice -c 3 nice -n 19 make -j"${JOBS}" "${MAKE_ARGS[@]}" dtbs
           fi
 
           ccache -s
@@ -386,6 +438,7 @@ jobs:
             - **内核版本**: `${{ steps.package.outputs.kernel_release }}`
             - **Clang 版本**: `${{ steps.meta.outputs.clang_version }}`
             - **LTO 模式**: `${{ steps.meta.outputs.lto_mode }}`
+            - **关闭 DEBUG_INFO**: `${{ steps.meta.outputs.disable_debug_info }}`
             - **KernelSU 方案**: `${{ steps.meta.outputs.ksu_variant }}`
             - **源码提交**: `${{ github.sha }}`
           files: ${{ github.workspace }}/dist/*
