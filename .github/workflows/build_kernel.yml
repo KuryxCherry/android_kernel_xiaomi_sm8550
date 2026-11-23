@@ -15,7 +15,7 @@ on:
           - vermeer
           - gki_only
       clang_toolchain:
-        description: "AOSP Clang 工具链（r596125 = Clang 22.0.2，与你真机环境完全一致）"
+        description: "AOSP Clang 工具链（r596125 = Clang 22.0.2，与你真机环境一致）"
         required: false
         default: "r596125"
         type: choice
@@ -31,13 +31,18 @@ on:
           - none
           - kernelsu-next
           - kernelsu
+      build_modules:
+        description: "同时编译内核模块（单刷 AnyKernel3 仅需 Image，关闭可提速并大幅降内存）"
+        required: false
+        default: false
+        type: boolean
       build_dtbs:
-        description: "同时编译设备树（刷入 AnyKernel3 仅需 Image，建议保持关闭）"
+        description: "同时编译设备树（单刷 AnyKernel3 仅需 Image，建议保持关闭）"
         required: false
         default: false
         type: boolean
       enable_lto:
-        description: "Clang LTO 模式（默认 full 与真机一致，自动挂载 16GB Swap 防 OOM）"
+        description: "Clang LTO 模式（默认 full 与真机一致；若想更快可选 thin）"
         required: false
         default: "full"
         type: choice
@@ -92,13 +97,22 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h
 
-      - name: 挂载 16GB Swap（Full LTO 启用，防止链接 vmlinux 时内存不足）
+      - name: 挂载 20GB 高速 Swap（Full LTO 防 OOM 与 Runner 失联）
         if: ${{ (inputs.enable_lto || 'full') == 'full' }}
         run: |
-          sudo fallocate -l 16G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
+          # 优先使用独立临时盘 /mnt，避免挤占根分区导致磁盘耗尽
+          MNT_AVAIL_GB=$(df -BG --output=avail /mnt 2>/dev/null | tail -1 | tr -dc '0-9' || echo 0)
+          if [ "${MNT_AVAIL_GB:-0}" -ge 24 ]; then
+            SWAP_PATH="/mnt/swapfile"
+          else
+            SWAP_PATH="/swapfile"
+          fi
+          echo "Creating 20GB swap at ${SWAP_PATH} (/mnt avail: ${MNT_AVAIL_GB}G)"
+          sudo fallocate -l 20G "${SWAP_PATH}"
+          sudo chmod 600 "${SWAP_PATH}"
+          sudo mkswap "${SWAP_PATH}"
+          sudo swapon "${SWAP_PATH}"
+          sudo sysctl -w vm.swappiness=60
           free -h
 
       - name: 安装编译依赖（含 pahole 1.25）
@@ -151,6 +165,7 @@ jobs:
           CLANG_VERSION="${{ inputs.clang_toolchain || 'r596125' }}"
           KSU_VARIANT="${{ inputs.ksu_variant || 'none' }}"
           LTO_MODE="${{ inputs.enable_lto || 'full' }}"
+          BUILD_MODULES="${{ inputs.build_modules == true && 'true' || 'false' }}"
           BUILD_DTBS="${{ inputs.build_dtbs == true && 'true' || 'false' }}"
           PACKAGE_AK3="${{ inputs.package_anykernel3 != false && 'true' || 'false' }}"
 
@@ -167,6 +182,7 @@ jobs:
             echo "device=${DEVICE}"
             echo "ksu_variant=${KSU_VARIANT}"
             echo "lto_mode=${LTO_MODE}"
+            echo "build_modules=${BUILD_MODULES}"
             echo "build_dtbs=${BUILD_DTBS}"
             echo "package_ak3=${PACKAGE_AK3}"
             echo "clang_version=${CLANG_VERSION}"
@@ -175,7 +191,7 @@ jobs:
             echo "build_date=${BUILD_DATE}"
           } >> "$GITHUB_OUTPUT"
 
-          echo "Device=${DEVICE} | Clang=${CLANG_VERSION} | LTO=${LTO_MODE} | KSU=${KSU_VARIANT} | DTBS=${BUILD_DTBS} | Commit=${SHORT_SHA}"
+          echo "Device=${DEVICE} | Clang=${CLANG_VERSION} | LTO=${LTO_MODE} | KSU=${KSU_VARIANT} | MODULES=${BUILD_MODULES} | DTBS=${BUILD_DTBS} | Commit=${SHORT_SHA}"
 
       - name: 集成 KernelSU / KernelSU-Next（可选）
         if: ${{ steps.meta.outputs.ksu_variant != 'none' }}
@@ -271,7 +287,7 @@ jobs:
 
           make -j"$(nproc)" "${MAKE_ARGS[@]}" olddefconfig
 
-      - name: 编译内核镜像、模块与可选设备树
+      - name: 编译内核镜像（以及可选模块与设备树）
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
           export PATH="${{ github.workspace }}/toolchain/clang/bin:${PATH}"
@@ -293,12 +309,18 @@ jobs:
             DTC_EXT="$(command -v dtc)"
           )
 
-          BUILD_TARGETS=(Image modules)
-          if [ "${{ steps.meta.outputs.build_dtbs }}" = "true" ]; then
-            BUILD_TARGETS+=(dtbs)
+          # 使用 nice -n 10 降低编译进程优先级，避免 Full LTO 链接阶段饿死 GitHub Runner 心跳进程
+          # 先单独编译 Image，避免与 modules 并行抢占内存
+          nice -n 10 make -j"$(nproc)" "${MAKE_ARGS[@]}" Image
+
+          if [ "${{ steps.meta.outputs.build_modules }}" = "true" ]; then
+            nice -n 10 make -j"$(nproc)" "${MAKE_ARGS[@]}" modules
           fi
 
-          make -j"$(nproc)" "${MAKE_ARGS[@]}" "${BUILD_TARGETS[@]}"
+          if [ "${{ steps.meta.outputs.build_dtbs }}" = "true" ]; then
+            nice -n 10 make -j"$(nproc)" "${MAKE_ARGS[@]}" dtbs
+          fi
+
           ccache -s
 
       - name: 收集构建产物并打包 AnyKernel3
