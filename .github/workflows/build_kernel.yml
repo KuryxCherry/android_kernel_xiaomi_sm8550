@@ -14,6 +14,14 @@ on:
           - nuwa
           - vermeer
           - gki_only
+      clang_toolchain:
+        description: "AOSP Clang 工具链（r596125 = Clang 22.0.2，与你真机环境完全一致）"
+        required: false
+        default: "r596125"
+        type: choice
+        options:
+          - r596125
+          - r450784e
       ksu_variant:
         description: "Root 方案集成（源码默认不含 KernelSU）"
         required: false
@@ -24,18 +32,18 @@ on:
           - kernelsu-next
           - kernelsu
       build_dtbs:
-        description: "同时编译设备树（SM8550 GKI 刷入 AnyKernel3 仅需 Image，建议保持关闭）"
+        description: "同时编译设备树（刷入 AnyKernel3 仅需 Image，建议保持关闭）"
         required: false
         default: false
         type: boolean
       enable_lto:
-        description: "Clang LTO 优化模式（GitHub Runner 建议 thin 或 none，避免内存不足）"
+        description: "Clang LTO 模式（默认 full 与真机一致，自动挂载 16GB Swap 防 OOM）"
         required: false
-        default: "thin"
+        default: "full"
         type: choice
         options:
-          - thin
           - full
+          - thin
           - none
       package_anykernel3:
         description: "使用 AnyKernel3 打包可刷入 ZIP"
@@ -71,12 +79,12 @@ env:
   MODULES_DIR: sm8550-modules
   OUT_DIR: out
   ANYKERNEL_REPO: https://github.com/osm0sis/AnyKernel3.git
-  CLANG_BRANCH: android14-release
 
 jobs:
   build:
-    name: Build SM8550 Kernel (${{ inputs.device || 'socrates' }})
-    runs-on: ubuntu-22.04
+    name: Build SM8550 Kernel (${{ inputs.device || 'socrates' }} / ${{ inputs.clang_toolchain || 'r596125' }} / ${{ inputs.enable_lto || 'full' }})
+    # Ubuntu 24.04 自带 dwarves (pahole 1.25)，与真机 CONFIG_PAHOLE_VERSION=125 对齐
+    runs-on: ubuntu-24.04
 
     steps:
       - name: 释放 Runner 磁盘空间
@@ -84,12 +92,21 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h
 
-      - name: 安装编译依赖
+      - name: 挂载 16GB Swap（Full LTO 启用，防止链接 vmlinux 时内存不足）
+        if: ${{ (inputs.enable_lto || 'full') == 'full' }}
+        run: |
+          sudo fallocate -l 16G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
+      - name: 安装编译依赖（含 pahole 1.25）
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bc bison build-essential ccache cpio curl device-tree-compiler \
-            dwarves flex git kmod libelf-dev libncurses5 libssl-dev libtinfo5 \
+            dwarves flex git kmod libelf-dev libncurses-dev libssl-dev \
             lz4 python3 rsync tar unzip wget xz-utils zip zstd
           pahole --version
 
@@ -122,7 +139,6 @@ jobs:
         run: |
           ls -la "${{ env.KERNEL_DIR }}/arch/arm64/boot/dts/vendor"
           test -d "${{ env.KERNEL_DIR }}/arch/arm64/boot/dts/vendor"
-          # 将 sm8550-modules 内的 bindings/dt-bindings 头文件同步到 dtc 头文件搜索路径，解决 bindings/qcom,audio-ext-clk.h 缺失
           mkdir -p "${{ env.KERNEL_DIR }}/scripts/dtc/include-prefixes/bindings"
           mkdir -p "${{ env.KERNEL_DIR }}/scripts/dtc/include-prefixes/dt-bindings"
           find "${{ env.MODULES_DIR }}" -type d -name "bindings" -exec sh -c 'cp -rn "$1"/* "$2"/ 2>/dev/null || true' _ {} "${{ env.KERNEL_DIR }}/scripts/dtc/include-prefixes/bindings" \;
@@ -132,17 +148,16 @@ jobs:
         id: meta
         run: |
           DEVICE="${{ inputs.device || 'socrates' }}"
+          CLANG_VERSION="${{ inputs.clang_toolchain || 'r596125' }}"
           KSU_VARIANT="${{ inputs.ksu_variant || 'none' }}"
-          LTO_MODE="${{ inputs.enable_lto || 'thin' }}"
+          LTO_MODE="${{ inputs.enable_lto || 'full' }}"
           BUILD_DTBS="${{ inputs.build_dtbs == true && 'true' || 'false' }}"
           PACKAGE_AK3="${{ inputs.package_anykernel3 != false && 'true' || 'false' }}"
 
-          CLANG_VERSION="r450784e"
-          if [ -f "${{ env.KERNEL_DIR }}/build.config.constants" ]; then
-            DETECTED=$(grep -E '^CLANG_VERSION=' "${{ env.KERNEL_DIR }}/build.config.constants" | cut -d'=' -f2 | tr -d '[:space:]')
-            if [ -n "${DETECTED}" ]; then
-              CLANG_VERSION="${DETECTED}"
-            fi
+          if [ "${CLANG_VERSION}" = "r596125" ]; then
+            CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/mirror-goog-main-llvm-toolchain-source/clang-r596125.tar.gz"
+          else
+            CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android14-release/clang-${CLANG_VERSION}.tar.gz"
           fi
 
           SHORT_SHA=$(git -C "${{ env.KERNEL_DIR }}" rev-parse --short HEAD)
@@ -155,11 +170,12 @@ jobs:
             echo "build_dtbs=${BUILD_DTBS}"
             echo "package_ak3=${PACKAGE_AK3}"
             echo "clang_version=${CLANG_VERSION}"
+            echo "clang_url=${CLANG_URL}"
             echo "short_sha=${SHORT_SHA}"
             echo "build_date=${BUILD_DATE}"
           } >> "$GITHUB_OUTPUT"
 
-          echo "Device=${DEVICE} | KSU=${KSU_VARIANT} | LTO=${LTO_MODE} | DTBS=${BUILD_DTBS} | Clang=${CLANG_VERSION} | Commit=${SHORT_SHA}"
+          echo "Device=${DEVICE} | Clang=${CLANG_VERSION} | LTO=${LTO_MODE} | KSU=${KSU_VARIANT} | DTBS=${BUILD_DTBS} | Commit=${SHORT_SHA}"
 
       - name: 集成 KernelSU / KernelSU-Next（可选）
         if: ${{ steps.meta.outputs.ksu_variant != 'none' }}
@@ -179,25 +195,30 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/toolchain/clang
-          key: aosp-clang-${{ env.CLANG_BRANCH }}-${{ steps.meta.outputs.clang_version }}
+          key: aosp-clang-${{ steps.meta.outputs.clang_version }}
 
       - name: 下载 AOSP Clang 工具链
         if: steps.clang-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p "${{ github.workspace }}/toolchain/clang"
-          CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/${{ env.CLANG_BRANCH }}/clang-${{ steps.meta.outputs.clang_version }}.tar.gz"
-          echo "Downloading Clang from: ${CLANG_URL}"
-          curl -fSL "${CLANG_URL}" | tar -xz -C "${{ github.workspace }}/toolchain/clang"
+          echo "Downloading Clang from: ${{ steps.meta.outputs.clang_url }}"
+          curl -fSL "${{ steps.meta.outputs.clang_url }}" | tar -xz -C "${{ github.workspace }}/toolchain/clang"
+
+      - name: 校验 Clang 与 LLD 版本
+        run: |
+          export PATH="${{ github.workspace }}/toolchain/clang/bin:${PATH}"
+          clang --version
+          ld.lld --version
 
       - name: 缓存 ccache
         uses: actions/cache@v4
         with:
           path: ~/.ccache
-          key: ccache-sm8550-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.ksu_variant }}-${{ github.sha }}
+          key: ccache-sm8550-${{ steps.meta.outputs.clang_version }}-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.ksu_variant }}-${{ github.sha }}
           restore-keys: |
-            ccache-sm8550-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.ksu_variant }}-
-            ccache-sm8550-${{ steps.meta.outputs.device }}-
-            ccache-sm8550-
+            ccache-sm8550-${{ steps.meta.outputs.clang_version }}-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.ksu_variant }}-
+            ccache-sm8550-${{ steps.meta.outputs.clang_version }}-${{ steps.meta.outputs.device }}-
+            ccache-sm8550-${{ steps.meta.outputs.clang_version }}-
 
       - name: 配置内核（defconfig 合并与 LTO 选项）
         working-directory: ${{ env.KERNEL_DIR }}
@@ -230,13 +251,13 @@ jobs:
           make -j"$(nproc)" "${MAKE_ARGS[@]}" "${CONFIG_FRAGMENTS[@]}"
 
           case "${{ steps.meta.outputs.lto_mode }}" in
-            thin)
-              ./scripts/config --file "${{ env.OUT_DIR }}/.config" \
-                -d LTO_NONE -d LTO_CLANG_FULL -e LTO_CLANG_THIN
-              ;;
             full)
               ./scripts/config --file "${{ env.OUT_DIR }}/.config" \
                 -d LTO_NONE -d LTO_CLANG_THIN -e LTO_CLANG_FULL
+              ;;
+            thin)
+              ./scripts/config --file "${{ env.OUT_DIR }}/.config" \
+                -d LTO_NONE -d LTO_CLANG_FULL -e LTO_CLANG_THIN
               ;;
             none)
               ./scripts/config --file "${{ env.OUT_DIR }}/.config" \
@@ -318,7 +339,7 @@ jobs:
               KSU_TAG="-${{ steps.meta.outputs.ksu_variant }}"
             fi
 
-            ZIP_NAME="AnyKernel3-sm8550-${{ steps.meta.outputs.device }}${KSU_TAG}-${{ steps.meta.outputs.build_date }}-${{ steps.meta.outputs.short_sha }}.zip"
+            ZIP_NAME="AnyKernel3-sm8550-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.clang_version }}-${{ steps.meta.outputs.lto_mode }}${KSU_TAG}-${{ steps.meta.outputs.build_date }}-${{ steps.meta.outputs.short_sha }}.zip"
             zip -r9 "${DIST_DIR}/${ZIP_NAME}" ./* -x "*.zip"
             echo "zip_name=${ZIP_NAME}" >> "$GITHUB_OUTPUT"
           fi
@@ -328,7 +349,7 @@ jobs:
       - name: 上传构建产物（Artifact）
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-sm8550-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.ksu_variant }}-${{ steps.meta.outputs.short_sha }}
+          name: kernel-sm8550-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.clang_version }}-${{ steps.meta.outputs.lto_mode }}-${{ steps.meta.outputs.ksu_variant }}-${{ steps.meta.outputs.short_sha }}
           path: ${{ github.workspace }}/dist/*
           retention-days: 14
 
@@ -341,8 +362,8 @@ jobs:
           body: |
             - **设备配置**: `${{ steps.meta.outputs.device }}`
             - **内核版本**: `${{ steps.package.outputs.kernel_release }}`
-            - **KernelSU 方案**: `${{ steps.meta.outputs.ksu_variant }}`
-            - **LTO 模式**: `${{ steps.meta.outputs.lto_mode }}`
             - **Clang 版本**: `${{ steps.meta.outputs.clang_version }}`
+            - **LTO 模式**: `${{ steps.meta.outputs.lto_mode }}`
+            - **KernelSU 方案**: `${{ steps.meta.outputs.ksu_variant }}`
             - **源码提交**: `${{ github.sha }}`
           files: ${{ github.workspace }}/dist/*
