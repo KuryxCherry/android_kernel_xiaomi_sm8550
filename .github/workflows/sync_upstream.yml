@@ -11,6 +11,11 @@ on:
         options:
           - lineageos
           - ack-lts
+      prefer_theirs_paths:
+        description: "仅对指定冲突文件路径采纳上游版本（空格分隔，默认留空严格中止）"
+        required: false
+        default: ""
+        type: string
       dry_run:
         description: "仅演练合并检测冲突，不推送"
         required: false
@@ -59,13 +64,30 @@ jobs:
           fi
 
           if ! git merge --no-edit --no-ff "upstream/${UPSTREAM_REF}"; then
-            echo "=== MERGE CONFLICTS DETECTED (aborted safely; local commits untouched) ==="
-            git diff --name-only --diff-filter=U
-            git merge --abort
-            exit 1
+            PREFER_THEIRS="${{ inputs.prefer_theirs_paths }}"
+            if [ -n "${PREFER_THEIRS}" ]; then
+              for P in ${PREFER_THEIRS}; do
+                if git diff --name-only --diff-filter=U | grep -qxF "${P}"; then
+                  echo "[RESOLVE] Taking upstream version for whitelisted conflict: ${P}"
+                  git checkout --theirs -- "${P}"
+                  git add "${P}"
+                fi
+              done
+            fi
+
+            REMAINING=$(git diff --name-only --diff-filter=U || true)
+            if [ -n "${REMAINING}" ]; then
+              echo "=== UNRESOLVED MERGE CONFLICTS DETECTED (aborted safely; local commits untouched) ==="
+              echo "${REMAINING}"
+              git merge --abort
+              exit 1
+            fi
+
+            git commit --no-edit
           fi
 
           echo "=== Clean merge succeeded! ==="
+          head -n 5 Makefile
           git log -n 5 --oneline
 
           if [ "${{ inputs.dry_run }}" = "true" ]; then
