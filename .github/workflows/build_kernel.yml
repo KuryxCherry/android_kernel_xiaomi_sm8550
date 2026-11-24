@@ -42,16 +42,6 @@ on:
         default: false
         type: boolean
 
-  push:
-    branches:
-      - lineage-24.0
-    tags:
-      - "v*"
-    paths-ignore:
-      - "README*"
-      - "Documentation/**"
-      - ".github/**"
-
 permissions:
   contents: write
 
