@@ -22,6 +22,21 @@ on:
         options:
           - r596125
           - r450784e
+      enable_bbrv3:
+        description: "移植 TCP BBRv3（android13-5.15-lts 专用补丁）"
+        required: false
+        default: true
+        type: boolean
+      enable_f2fs_opt:
+        description: "移植 F2FS 优化（降低拥塞卡顿 + 优化 fsync 块阈值）"
+        required: false
+        default: true
+        type: boolean
+      enable_lz4_110:
+        description: "尝试移植 LZ4 1.10.0 + ARM64 汇编加速（原为 6.1 补丁，如 5.15 冲突会报错提示）"
+        required: false
+        default: true
+        type: boolean
       ksu_variant:
         description: "Root 方案集成（源码默认不含 KernelSU）"
         required: false
@@ -32,16 +47,16 @@ on:
           - kernelsu-next
           - kernelsu
       enable_lto:
-        description: "Clang LTO 模式（默认 full + 极限防失联保护；想更快可选 thin）"
+        description: "Clang LTO 模式（建议先用 thin 快速验证补丁，稳过后再试 full）"
         required: false
-        default: "full"
+        default: "thin"
         type: choice
         options:
-          - full
           - thin
+          - full
           - none
       disable_debug_info:
-        description: "关闭 DEBUG_INFO/BTF（默认保留完整 BTF；若极限模式仍 OOM 再勾选此项）"
+        description: "关闭 DEBUG_INFO/BTF（默认保留完整 BTF；跑 full LTO 若仍 OOM 可勾选）"
         required: false
         default: false
         type: boolean
@@ -92,7 +107,7 @@ env:
 
 jobs:
   build:
-    name: Build SM8550 Kernel (${{ inputs.device || 'socrates' }} / ${{ inputs.clang_toolchain || 'r596125' }} / ${{ inputs.enable_lto || 'full' }})
+    name: Build SM8550 Kernel (${{ inputs.device || 'socrates' }} / ${{ inputs.clang_toolchain || 'r596125' }} / ${{ inputs.enable_lto || 'thin' }})
     # Ubuntu 24.04 自带 dwarves (pahole 1.25)，与真机 CONFIG_PAHOLE_VERSION=125 对齐
     runs-on: ubuntu-24.04
     timeout-minutes: 350
@@ -104,9 +119,8 @@ jobs:
           df -h
 
       - name: 配置 ZRAM 压缩内存 + 24GB 磁盘 Swap（Full LTO 极限防 OOM 与防失联）
-        if: ${{ (inputs.enable_lto || 'full') == 'full' }}
+        if: ${{ (inputs.enable_lto || 'thin') == 'full' }}
         run: |
-          # 1. 优先尝试开启 16GB ZRAM (ZSTD/LZ4，高优先级 pri=100)，对 LLVM IR/DWARF 压缩比高且远快于磁盘
           if sudo modprobe zram 2>/dev/null; then
             ZRAM_DEV=$(sudo zramctl --find --size 16G --algorithm zstd 2>/dev/null || sudo zramctl --find --size 16G --algorithm lz4 2>/dev/null || true)
             if [ -n "${ZRAM_DEV}" ]; then
@@ -114,24 +128,18 @@ jobs:
               sudo swapon -p 100 "${ZRAM_DEV}"
               echo "Enabled ZRAM swap on ${ZRAM_DEV} (priority 100)"
             fi
-          else
-            echo "ZRAM kernel module unavailable on this runner, falling back to disk swap only."
           fi
 
-          # 2. 挂载 24GB 磁盘 Swap (低优先级 pri=10) 作为最终兜底，优先放在独立临时盘 /mnt
           MNT_AVAIL_GB=$(df -BG --output=avail /mnt 2>/dev/null | tail -1 | tr -dc '0-9' || echo 0)
           if [ "${MNT_AVAIL_GB:-0}" -ge 28 ]; then
             SWAP_PATH="/mnt/swapfile"
           else
             SWAP_PATH="/swapfile"
           fi
-          echo "Creating 24GB disk swap at ${SWAP_PATH} (/mnt avail: ${MNT_AVAIL_GB}G)"
           sudo fallocate -l 24G "${SWAP_PATH}"
           sudo chmod 600 "${SWAP_PATH}"
           sudo mkswap "${SWAP_PATH}"
           sudo swapon -p 10 "${SWAP_PATH}"
-
-          # 降低 Swap 预读抖动，优先回收不活跃页
           sudo sysctl -w vm.swappiness=100 vm.page-cluster=0
           swapon --show
           free -h
@@ -142,7 +150,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             bc bison build-essential ccache cpio curl device-tree-compiler \
             dwarves flex git kmod libelf-dev libncurses-dev libssl-dev \
-            lz4 python3 rsync tar unzip wget xz-utils zip zstd
+            lz4 patch python3 rsync tar unzip wget xz-utils zip zstd
           pahole --version
 
       - name: 拉取内核源码
@@ -185,7 +193,10 @@ jobs:
           DEVICE="${{ inputs.device || 'socrates' }}"
           CLANG_VERSION="${{ inputs.clang_toolchain || 'r596125' }}"
           KSU_VARIANT="${{ inputs.ksu_variant || 'none' }}"
-          LTO_MODE="${{ inputs.enable_lto || 'full' }}"
+          LTO_MODE="${{ inputs.enable_lto || 'thin' }}"
+          ENABLE_BBRV3="${{ inputs.enable_bbrv3 != false && 'true' || 'false' }}"
+          ENABLE_F2FS_OPT="${{ inputs.enable_f2fs_opt != false && 'true' || 'false' }}"
+          ENABLE_LZ4_110="${{ inputs.enable_lz4_110 != false && 'true' || 'false' }}"
           DISABLE_DEBUG_INFO="${{ inputs.disable_debug_info == true && 'true' || 'false' }}"
           BUILD_MODULES="${{ inputs.build_modules == true && 'true' || 'false' }}"
           BUILD_DTBS="${{ inputs.build_dtbs == true && 'true' || 'false' }}"
@@ -204,6 +215,9 @@ jobs:
             echo "device=${DEVICE}"
             echo "ksu_variant=${KSU_VARIANT}"
             echo "lto_mode=${LTO_MODE}"
+            echo "enable_bbrv3=${ENABLE_BBRV3}"
+            echo "enable_f2fs_opt=${ENABLE_F2FS_OPT}"
+            echo "enable_lz4_110=${ENABLE_LZ4_110}"
             echo "disable_debug_info=${DISABLE_DEBUG_INFO}"
             echo "build_modules=${BUILD_MODULES}"
             echo "build_dtbs=${BUILD_DTBS}"
@@ -214,7 +228,49 @@ jobs:
             echo "build_date=${BUILD_DATE}"
           } >> "$GITHUB_OUTPUT"
 
-          echo "Device=${DEVICE} | Clang=${CLANG_VERSION} | LTO=${LTO_MODE} | NoDebugInfo=${DISABLE_DEBUG_INFO} | KSU=${KSU_VARIANT} | Commit=${SHORT_SHA}"
+          echo "Device=${DEVICE} | Clang=${CLANG_VERSION} | LTO=${LTO_MODE} | BBRv3=${ENABLE_BBRV3} | F2FS=${ENABLE_F2FS_OPT} | LZ4=${ENABLE_LZ4_110} | Commit=${SHORT_SHA}"
+
+      - name: 应用上游移植补丁（BBRv3 / F2FS / LZ4 1.10）与仓库本地 patches/
+        working-directory: ${{ env.KERNEL_DIR }}
+        run: |
+          mkdir -p /tmp/upstream_patches
+
+          if [ "${{ steps.meta.outputs.enable_bbrv3 }}" = "true" ]; then
+            echo "=== [1/4] Applying BBRv3 for android13-5.15-lts ==="
+            curl -fSL -o /tmp/upstream_patches/bbrv3.patch \
+              "https://raw.githubusercontent.com/WildKernels/kernel_patches/refs/heads/main/common/bbrv3/0001-net-tcp-backport-BBRv3-to-android13-5.15-lts.patch"
+            patch -p1 --forward --fuzz=3 < /tmp/upstream_patches/bbrv3.patch
+          fi
+
+          if [ "${{ steps.meta.outputs.enable_f2fs_opt }}" = "true" ]; then
+            echo "=== [2/4] Applying F2FS congestion & fsync optimizations ==="
+            curl -fSL -o /tmp/upstream_patches/f2fs_reduce_congestion.patch \
+              "https://raw.githubusercontent.com/WildKernels/kernel_patches/refs/heads/main/common/f2fs_reduce_congestion.patch"
+            curl -fSL -o /tmp/upstream_patches/f2fs_enlarge_min_fsync_blocks.patch \
+              "https://raw.githubusercontent.com/WildKernels/kernel_patches/refs/heads/main/common/f2fs_enlarge_min_fsync_blocks.patch"
+            patch -p1 --forward --fuzz=3 < /tmp/upstream_patches/f2fs_reduce_congestion.patch
+            patch -p1 --forward --fuzz=3 < /tmp/upstream_patches/f2fs_enlarge_min_fsync_blocks.patch
+          fi
+
+          if [ "${{ steps.meta.outputs.enable_lz4_110 }}" = "true" ]; then
+            echo "=== [3/4] Applying LZ4 1.10.0 + ARM64 ASM acceleration ==="
+            curl -fSL -o /tmp/upstream_patches/001-lz4.patch \
+              "https://raw.githubusercontent.com/furrybluelan/oppo_oplus_realme_sm8650/refs/heads/main/zram_patch/001-lz4.patch"
+            curl -fSL -o lib/lz4/lz4armv8.S \
+              "https://raw.githubusercontent.com/furrybluelan/oppo_oplus_realme_sm8650/refs/heads/main/zram_patch/lz4armv8.S"
+            patch -p1 --forward --fuzz=3 < /tmp/upstream_patches/001-lz4.patch
+          fi
+
+          if [ -d "patches" ]; then
+            echo "=== [4/4] Applying local repository patches/*.patch ==="
+            for p in patches/*.patch; do
+              [ -e "$p" ] || continue
+              echo "Applying local patch: $p"
+              patch -p1 --forward --fuzz=3 < "$p"
+            done
+          fi
+
+          git status --short
 
       - name: 集成 KernelSU / KernelSU-Next（可选）
         if: ${{ steps.meta.outputs.ksu_variant != 'none' }}
@@ -305,7 +361,6 @@ jobs:
           esac
 
           if [ "${{ steps.meta.outputs.disable_debug_info }}" = "true" ]; then
-            echo "Disabling DEBUG_INFO and DEBUG_INFO_BTF to minimize Full LTO memory usage"
             ./scripts/config --file "${{ env.OUT_DIR }}/.config" \
               -d DEBUG_INFO -d DEBUG_INFO_DWARF4 -d DEBUG_INFO_DWARF5 \
               -d DEBUG_INFO_BTF -d DEBUG_INFO_BTF_MODULES
@@ -341,7 +396,6 @@ jobs:
 
           JOBS="$(nproc)"
           if [ "${{ steps.meta.outputs.lto_mode }}" = "full" ]; then
-            # Full LTO 极限保护：降编译并发为 2，且通过包装器强制 ld.lld 单线程链接以压低峰值内存
             JOBS=2
             cat <<EOF > /tmp/ld.lld-1t
           #!/usr/bin/env bash
@@ -351,7 +405,6 @@ jobs:
             MAKE_ARGS+=(LD="/tmp/ld.lld-1t")
           fi
 
-          # 在同一步骤内启动轻量内存/Swap 实时监控，便于定位峰值占用，退出时自动清理
           (
             while true; do
               sleep 60
@@ -362,7 +415,6 @@ jobs:
           MON_PID=$!
           trap 'kill "${MON_PID}" 2>/dev/null || true' EXIT
 
-          # 使用 ionice -c 3 (空闲级 I/O) + nice -n 19 (最低 CPU 优先级)，彻底避免拖死 Runner 心跳进程
           ionice -c 3 nice -n 19 make -j"${JOBS}" "${MAKE_ARGS[@]}" Image
 
           if [ "${{ steps.meta.outputs.build_modules }}" = "true" ]; then
@@ -438,7 +490,7 @@ jobs:
             - **内核版本**: `${{ steps.package.outputs.kernel_release }}`
             - **Clang 版本**: `${{ steps.meta.outputs.clang_version }}`
             - **LTO 模式**: `${{ steps.meta.outputs.lto_mode }}`
-            - **关闭 DEBUG_INFO**: `${{ steps.meta.outputs.disable_debug_info }}`
+            - **移植补丁**: `BBRv3=${{ steps.meta.outputs.enable_bbrv3 }}, F2FS=${{ steps.meta.outputs.enable_f2fs_opt }}, LZ4_1.10=${{ steps.meta.outputs.enable_lz4_110 }}`
             - **KernelSU 方案**: `${{ steps.meta.outputs.ksu_variant }}`
             - **源码提交**: `${{ github.sha }}`
           files: ${{ github.workspace }}/dist/*
