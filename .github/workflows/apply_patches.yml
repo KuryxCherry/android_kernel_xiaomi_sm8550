@@ -13,6 +13,11 @@ on:
         required: false
         default: true
         type: boolean
+      apply_lz4_110:
+        description: "合入 LZ4 1.10.0 + ARM64 NEON 汇编加速（跨版本通用，保留 KMI 符号）"
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -28,14 +33,14 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: 安装 patch 工具并配置 Git 身份
+      - name: 安装依赖并配置 Git 身份
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends patch curl
+          sudo apt-get install -y --no-install-recommends patch curl perl
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: 下载并合入已验证兼容 5.15 的上游补丁
+      - name: 合入 BBRv3、F2FS 调优与 LZ4 1.10.0（按功能独立提交）
         run: |
           mkdir -p /tmp/patches
           CHANGED=0
@@ -67,7 +72,6 @@ jobs:
               "https://raw.githubusercontent.com/WildKernels/kernel_patches/refs/heads/main/common/bbrv3/0001-net-tcp-backport-BBRv3-to-android13-5.15-lts.patch" \
               "/tmp/patches/bbrv3.patch"
 
-            # 根据 net/ipv4/Kconfig 自动适配 socrates_GKI.config 中的 BBRv3 配置项
             CFG="arch/arm64/configs/vendor/socrates_GKI.config"
             if grep -qE '^config TCP_CONG_BBR3\b' net/ipv4/Kconfig && [ -f "${CFG}" ]; then
               if ! grep -q '^CONFIG_TCP_CONG_BBR3=y' "${CFG}"; then
@@ -95,6 +99,29 @@ jobs:
               "fs: f2fs: enlarge min fsync blocks" \
               "https://raw.githubusercontent.com/WildKernels/kernel_patches/refs/heads/main/common/f2fs_enlarge_min_fsync_blocks.patch" \
               "/tmp/patches/f2fs_enlarge_min_fsync_blocks.patch"
+          fi
+
+          if [ "${{ inputs.apply_lz4_110 }}" = "true" ]; then
+            if [ -d "lib/lz4/lz4armv8" ]; then
+              echo "[SKIP] LZ4 1.10.0 + ARM64 NEON 已存在于当前源码中，跳过。"
+            else
+              echo "[APPLY] 正在稀疏拉取并合入 LZ4 1.10.0 + ARM64 NEON 汇编加速"
+              rm -rf /tmp/abk_zram
+              git clone --depth=1 --filter=blob:none --sparse -b dev \
+                https://github.com/N1-k0-la1/AnyBaseKernel.git /tmp/abk_zram
+              git -C /tmp/abk_zram sparse-checkout set zram
+
+              rm -f lib/lz4/lz4_compress.c lib/lz4/lz4_decompress.c lib/lz4/lz4defs.h lib/lz4/lz4hc_compress.c
+              cp -r /tmp/abk_zram/zram/lz4/* lib/lz4/
+              cp -r /tmp/abk_zram/zram/include/linux/* include/linux/
+              bash /tmp/abk_zram/zram/apply_lz4_neon.sh
+
+              git add -A
+              if ! git diff --cached --quiet; then
+                git commit -m "lib/lz4: upgrade to LZ4 1.10.0 with ARM64 NEON acceleration"
+                CHANGED=1
+              fi
+            fi
           fi
 
           if [ "${CHANGED}" = "1" ]; then
