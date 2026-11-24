@@ -80,7 +80,7 @@ jobs:
             dwarves erofs-utils flex git kmod libelf-dev libncurses-dev libssl-dev \
             lz4 python3 rsync tar unzip wget xz-utils zip zstd
           pahole --version
-          mkfs.erofs --version
+          mkfs.erofs --help | head -n 1
 
       - name: 拉取主内核源码（kernel/xiaomi/sm8550）
         uses: actions/checkout@v4
