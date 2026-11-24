@@ -1,0 +1,23 @@
+menu "Re:Kernel"
+
+config REKERNEL
+	bool "Re:Kernel built-in support"
+	depends on ANDROID_BINDER_IPC && ANDROID_VENDOR_HOOKS && NETFILTER && KALLSYMS
+	default n
+	help
+	  Integrate Re:Kernel directly into the kernel to notify userspace
+	  freezer/tombstone daemons about binder, signal, and network events
+	  targeting frozen tasks.
+
+config REKERNEL_LEGACY_NETLINK
+	bool "Re:Kernel legacy raw-netlink transport"
+	depends on REKERNEL
+	default n
+	help
+	  Use the legacy raw-netlink transport (fixed family units 22-25,
+	  USER_PORT 100, /proc/rekernel) instead of the default Generic
+	  Netlink transport ("rekernel" family). Enable this only for
+	  compatibility with older userspace daemons that have not migrated
+	  to Generic Netlink.
+
+endmenu
