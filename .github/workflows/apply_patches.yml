@@ -72,13 +72,7 @@ jobs:
             if grep -qE '^config TCP_CONG_BBR3\b' net/ipv4/Kconfig && [ -f "${CFG}" ]; then
               if ! grep -q '^CONFIG_TCP_CONG_BBR3=y' "${CFG}"; then
                 sed -i '/^CONFIG_DEFAULT_BBR=y/d; /^CONFIG_DEFAULT_TCP_CONG=/d' "${CFG}"
-                cat <<'EOF' >> "${CFG}"
-
-# Enable BBRv3 as default TCP congestion control
-CONFIG_TCP_CONG_BBR3=y
-CONFIG_DEFAULT_BBR3=y
-CONFIG_DEFAULT_TCP_CONG="bbr3"
-EOF
+                printf '\n# Enable BBRv3 as default TCP congestion control\nCONFIG_TCP_CONG_BBR3=y\nCONFIG_DEFAULT_BBR3=y\nCONFIG_DEFAULT_TCP_CONG="bbr3"\n' >> "${CFG}"
                 if grep -qE '^config TCP_PLB\b' net/ipv4/Kconfig; then
                   echo "CONFIG_TCP_PLB=y" >> "${CFG}"
                 fi
