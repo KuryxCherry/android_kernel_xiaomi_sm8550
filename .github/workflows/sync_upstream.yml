@@ -1,0 +1,75 @@
+name: Sync Upstream Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_source:
+        description: "上游源选择"
+        required: true
+        default: "lineageos"
+        type: choice
+        options:
+          - lineageos
+          - ack-lts
+      dry_run:
+        description: "仅演练合并检测冲突，不推送"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    name: Sync Upstream (${{ inputs.upstream_source }})
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: 检出当前分支完整历史
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 拉取并尝试无损合并上游
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          case "${{ inputs.upstream_source }}" in
+            lineageos)
+              UPSTREAM_URL="https://github.com/LineageOS/android_kernel_xiaomi_sm8550.git"
+              UPSTREAM_REF="lineage-24.0"
+              ;;
+            ack-lts)
+              UPSTREAM_URL="https://android.googlesource.com/kernel/common"
+              UPSTREAM_REF="android13-5.15-lts"
+              ;;
+          esac
+
+          git remote add upstream "${UPSTREAM_URL}"
+          git fetch --no-tags upstream "${UPSTREAM_REF}"
+
+          BEHIND=$(git rev-list --count HEAD..upstream/"${UPSTREAM_REF}")
+          echo "Commits available from ${UPSTREAM_URL} (${UPSTREAM_REF}): ${BEHIND}"
+          if [ "${BEHIND}" = "0" ]; then
+            echo "Already up to date."
+            exit 0
+          fi
+
+          if ! git merge --no-edit --no-ff "upstream/${UPSTREAM_REF}"; then
+            echo "=== MERGE CONFLICTS DETECTED (aborted safely; local commits untouched) ==="
+            git diff --name-only --diff-filter=U
+            git merge --abort
+            exit 1
+          fi
+
+          echo "=== Clean merge succeeded! ==="
+          git log -n 5 --oneline
+
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "Dry-run enabled; skipping push."
+          else
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi

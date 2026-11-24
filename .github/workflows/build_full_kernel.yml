@@ -1,0 +1,511 @@
+name: Build Full Xiaomi SM8550 Kernel + Modules
+
+on:
+  workflow_dispatch:
+    inputs:
+      device:
+        description: "目标设备"
+        required: true
+        default: "socrates"
+        type: choice
+        options:
+          - socrates
+          - fuxi
+          - nuwa
+          - vermeer
+      enable_lto:
+        description: "Clang LTO 模式（推荐 thin）"
+        required: false
+        default: "thin"
+        type: choice
+        options:
+          - thin
+          - none
+      ksu_variant:
+        description: "Root 方案（可选）"
+        required: false
+        default: "none"
+        type: choice
+        options:
+          - none
+          - kernelsu-next
+          - kernelsu
+      modules_repo:
+        description: "外置驱动仓库（owner/repo）"
+        required: false
+        default: "KuryxCherry/android_kernel_xiaomi_sm8550-modules"
+        type: string
+      modules_ref:
+        description: "外置驱动分支或 Tag"
+        required: false
+        default: "lineage-24.0"
+        type: string
+      upload_release:
+        description: "发布产物到 GitHub Releases"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CLANG_VERSION: r596125
+  CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/mirror-goog-main-llvm-toolchain-source/clang-r596125.tar.gz
+  ANYKERNEL_REPO: https://github.com/osm0sis/AnyKernel3.git
+  DEVICE_COMMON_REPO: https://github.com/LineageOS/android_device_xiaomi_sm8550-common.git
+  TARGET_BOARD_PLATFORM: kalama
+
+jobs:
+  build-full:
+    name: Full Build SM8550 (${{ inputs.device || 'socrates' }} / ${{ inputs.enable_lto || 'thin' }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+
+    steps:
+      - name: 释放 Runner 磁盘空间
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h
+
+      - name: 安装编译依赖（含 pahole 1.25）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache cpio curl device-tree-compiler \
+            dwarves flex git kmod libelf-dev libncurses-dev libssl-dev \
+            lz4 python3 rsync tar unzip wget xz-utils zip zstd
+          pahole --version
+
+      - name: 拉取主内核源码（kernel/xiaomi/sm8550）
+        uses: actions/checkout@v4
+        with:
+          path: kernel/xiaomi/sm8550
+          fetch-depth: 1
+
+      - name: 拉取外置驱动源码（kernel/xiaomi/sm8550-modules）
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.modules_repo || 'KuryxCherry/android_kernel_xiaomi_sm8550-modules' }}
+          ref: ${{ inputs.modules_ref || 'lineage-24.0' }}
+          path: kernel/xiaomi/sm8550-modules
+          fetch-depth: 1
+
+      - name: 拉取设备模块加载清单（device/xiaomi/sm8550-common）
+        run: |
+          git clone --depth=1 -b lineage-24.0 "${{ env.DEVICE_COMMON_REPO }}" device/xiaomi/sm8550-common
+
+      - name: 解析构建参数
+        id: meta
+        run: |
+          DEVICE="${{ inputs.device || 'socrates' }}"
+          LTO_MODE="${{ inputs.enable_lto || 'thin' }}"
+          KSU_VARIANT="${{ inputs.ksu_variant || 'none' }}"
+          SHORT_SHA=$(git -C kernel/xiaomi/sm8550 rev-parse --short HEAD)
+          MOD_SHA=$(git -C kernel/xiaomi/sm8550-modules rev-parse --short HEAD)
+          BUILD_DATE=$(date +%Y%m%d-%H%M)
+
+          {
+            echo "device=${DEVICE}"
+            echo "lto_mode=${LTO_MODE}"
+            echo "ksu_variant=${KSU_VARIANT}"
+            echo "short_sha=${SHORT_SHA}"
+            echo "mod_sha=${MOD_SHA}"
+            echo "build_date=${BUILD_DATE}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 集成 KernelSU / KernelSU-Next（可选）
+        if: ${{ steps.meta.outputs.ksu_variant != 'none' }}
+        working-directory: kernel/xiaomi/sm8550
+        run: |
+          case "${{ steps.meta.outputs.ksu_variant }}" in
+            kernelsu-next)
+              curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
+              ;;
+            kernelsu)
+              curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
+              ;;
+          esac
+
+      - name: 缓存 AOSP Clang 22.0.2 (r596125)
+        id: clang-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/toolchain/clang
+          key: aosp-clang-${{ env.CLANG_VERSION }}
+
+      - name: 下载 AOSP Clang 22.0.2 (r596125)
+        if: steps.clang-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "${{ github.workspace }}/toolchain/clang"
+          curl -fSL "${{ env.CLANG_URL }}" | tar -xz -C "${{ github.workspace }}/toolchain/clang"
+
+      - name: 缓存 ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-full-sm8550-${{ env.CLANG_VERSION }}-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.ksu_variant }}-${{ github.sha }}
+          restore-keys: |
+            ccache-full-sm8550-${{ env.CLANG_VERSION }}-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.ksu_variant }}-
+            ccache-full-sm8550-${{ env.CLANG_VERSION }}-${{ steps.meta.outputs.device }}-
+            ccache-sm8550-${{ env.CLANG_VERSION }}-${{ steps.meta.outputs.device }}-
+            ccache-sm8550-${{ env.CLANG_VERSION }}-
+
+      - name: 编译主内核 Image 与内置模块（in-tree modules）
+        run: |
+          set -euo pipefail
+          WS="${{ github.workspace }}"
+          KERNEL_SRC="${WS}/kernel/xiaomi/sm8550"
+          KERNEL_OUT="${WS}/out/sm8550"
+          MOD_STAGE="${WS}/out/modules_stage"
+          mkdir -p "${KERNEL_OUT}" "${MOD_STAGE}"
+
+          export PATH="${WS}/toolchain/clang/bin:${PATH}"
+          export KBUILD_BUILD_USER="github-actions"
+          export KBUILD_BUILD_HOST="sm8550-ci"
+          export TARGET_BOARD_PLATFORM="kalama"
+          clang --version
+          ccache -M 6G
+          ccache -z
+
+          MAKE_ARGS=(
+            O="${KERNEL_OUT}"
+            ARCH=arm64
+            SUBARCH=arm64
+            CC="ccache clang"
+            HOSTCC=clang
+            HOSTCXX=clang++
+            LLVM=1
+            LLVM_IAS=1
+            DEPMOD=depmod
+            DTC_EXT="$(command -v dtc)"
+          )
+
+          cd "${KERNEL_SRC}"
+          make -j"$(nproc)" "${MAKE_ARGS[@]}" gki_defconfig vendor/kalama_GKI.config "vendor/${{ steps.meta.outputs.device }}_GKI.config"
+
+          case "${{ steps.meta.outputs.lto_mode }}" in
+            thin) ./scripts/config --file "${KERNEL_OUT}/.config" -d LTO_NONE -d LTO_CLANG_FULL -e LTO_CLANG_THIN ;;
+            none) ./scripts/config --file "${KERNEL_OUT}/.config" -d LTO_CLANG_THIN -d LTO_CLANG_FULL -e LTO_NONE ;;
+          esac
+
+          if [ "${{ steps.meta.outputs.ksu_variant }}" != "none" ]; then
+            ./scripts/config --file "${KERNEL_OUT}/.config" -e KSU -e KPROBES -e OVERLAY_FS
+          fi
+
+          make -j"$(nproc)" "${MAKE_ARGS[@]}" olddefconfig
+          grep -E '^(CONFIG_TCP_CONG_BBR3|CONFIG_DEFAULT_TCP_CONG|CONFIG_NET_SCH_DEFAULT|CONFIG_DEFAULT_FQ|CONFIG_DEFAULT_NET_SCH|CONFIG_LRU_GEN_ENABLED|CONFIG_RCU_LAZY|CONFIG_LTO_CLANG|# CONFIG_RCU_LAZY_DEFAULT_OFF)' "${KERNEL_OUT}/.config" || true
+
+          make -j"$(nproc)" "${MAKE_ARGS[@]}" Image modules
+          make -j"$(nproc)" "${MAKE_ARGS[@]}" INSTALL_MOD_PATH="${MOD_STAGE}" INSTALL_MOD_STRIP=1 modules_install
+
+          echo "=== In-tree modules installed ==="
+          find "${MOD_STAGE}" -name '*.ko' | wc -l
+
+      - name: 编译并安装 24 套高通/NXP 外置驱动模块
+        run: |
+          set -euo pipefail
+          WS="${{ github.workspace }}"
+          KERNEL_SRC="${WS}/kernel/xiaomi/sm8550"
+          EXT_ROOT="${WS}/kernel/xiaomi/sm8550-modules"
+          KERNEL_OUT="${WS}/out/sm8550"
+          MOD_STAGE="${WS}/out/modules_stage"
+
+          export PATH="${WS}/toolchain/clang/bin:${PATH}"
+          export KBUILD_BUILD_USER="github-actions"
+          export KBUILD_BUILD_HOST="sm8550-ci"
+          export TARGET_BOARD_PLATFORM="kalama"
+
+          EXT_MODULES=(
+            "qcom/opensource/mmrm-driver"
+            "qcom/opensource/mm-drivers/hw_fence"
+            "qcom/opensource/mm-drivers/msm_ext_display"
+            "qcom/opensource/mm-drivers/sync_fence"
+            "qcom/opensource/audio-kernel"
+            "qcom/opensource/camera-kernel"
+            "qcom/opensource/dataipa/drivers/platform/msm"
+            "qcom/opensource/datarmnet/core"
+            "qcom/opensource/datarmnet-ext/aps"
+            "qcom/opensource/datarmnet-ext/offload"
+            "qcom/opensource/datarmnet-ext/shs"
+            "qcom/opensource/datarmnet-ext/perf"
+            "qcom/opensource/datarmnet-ext/perf_tether"
+            "qcom/opensource/datarmnet-ext/sch"
+            "qcom/opensource/datarmnet-ext/wlan"
+            "qcom/opensource/securemsm-kernel"
+            "qcom/opensource/display-drivers/msm"
+            "qcom/opensource/eva-kernel"
+            "qcom/opensource/video-driver"
+            "qcom/opensource/graphics-kernel"
+            "qcom/opensource/wlan/platform"
+            "qcom/opensource/wlan/qcacld-3.0/.kiwi_v2"
+            "qcom/opensource/bt-kernel"
+            "nxp/opensource/driver"
+          )
+
+          COMMON_ARGS=(
+            KERNEL_SRC="${KERNEL_SRC}"
+            OUT_DIR="${KERNEL_OUT}"
+            O="${KERNEL_OUT}"
+            ARCH=arm64
+            SUBARCH=arm64
+            TARGET_BOARD_PLATFORM=kalama
+            CC="ccache clang"
+            HOSTCC=clang
+            HOSTCXX=clang++
+            LLVM=1
+            LLVM_IAS=1
+            DEPMOD=depmod
+            DTC_EXT="$(command -v dtc)"
+          )
+
+          for MOD in "${EXT_MODULES[@]}"; do
+            echo "================================================================"
+            echo "[EXT-MOD] Building: ${MOD}"
+            echo "================================================================"
+            make -j"$(nproc)" -C "${EXT_ROOT}/${MOD}" M="../sm8550-modules/${MOD}" "${COMMON_ARGS[@]}"
+            make -j"$(nproc)" -C "${EXT_ROOT}/${MOD}" M="../sm8550-modules/${MOD}" "${COMMON_ARGS[@]}" \
+              INSTALL_MOD_PATH="${MOD_STAGE}" \
+              INSTALL_MOD_STRIP=1 \
+              KERNEL_UAPI_HEADERS_DIR="${KERNEL_OUT}" \
+              modules_install
+          done
+
+          ccache -s
+          echo "=== Total .ko modules compiled (in-tree + external) ==="
+          find "${MOD_STAGE}" -name '*.ko' | wc -l
+
+      - name: 分拣模块、生成 depmod 依赖树并打包产物
+        id: package
+        run: |
+          set -euo pipefail
+          WS="${{ github.workspace }}"
+          KERNEL_OUT="${WS}/out/sm8550"
+          MOD_STAGE="${WS}/out/modules_stage"
+          COMMON_DIR="${WS}/device/xiaomi/sm8550-common"
+          DIST_DIR="${WS}/dist"
+          DEVICE="${{ steps.meta.outputs.device }}"
+          mkdir -p "${DIST_DIR}"
+
+          KERNEL_VER=$(cat "${KERNEL_OUT}/include/config/kernel.release" 2>/dev/null || echo "5.15-sm8550")
+          echo "kernel_release=${KERNEL_VER}" >> "$GITHUB_OUTPUT"
+
+          cp "${KERNEL_OUT}/arch/arm64/boot/Image" "${DIST_DIR}/Image"
+          cp "${KERNEL_OUT}/.config" "${DIST_DIR}/defconfig_used"
+
+          # Stage flat modules and verify against official modules.load.* manifests
+          python3 - "${MOD_STAGE}" "${COMMON_DIR}" "${WS}/out/partitions" "${KERNEL_VER}" "${DEVICE}" "${DIST_DIR}/module_report.txt" <<'PYEOF'
+          import os, sys, shutil, subprocess
+
+          mod_stage, common_dir, out_parts, kver, device, report_path = sys.argv[1:7]
+          kdir = os.path.join(mod_stage, "lib", "modules", kver)
+
+          all_kos = {}
+          for root, _, files in os.walk(kdir):
+              for f in files:
+                  if f.endswith(".ko"):
+                      all_kos[f] = os.path.join(root, f)
+
+          # Run depmod on a flat staging tree to compute exact dependency graph
+          flat_root = os.path.join(out_parts, "_all_flat")
+          flat_kdir = os.path.join(flat_root, "lib", "modules", kver)
+          os.makedirs(flat_kdir, exist_ok=True)
+          for name, path in all_kos.items():
+              shutil.copy2(path, os.path.join(flat_kdir, name))
+          for meta in ("modules.order", "modules.builtin", "modules.builtin.modinfo"):
+              src_m = os.path.join(kdir, meta)
+              if os.path.exists(src_m):
+                  shutil.copy2(src_m, os.path.join(flat_kdir, meta))
+          subprocess.run(["depmod", "-b", flat_root, kver], check=True)
+
+          deps = {}
+          dep_file = os.path.join(flat_kdir, "modules.dep")
+          with open(dep_file) as fh:
+              for line in fh:
+                  line = line.strip()
+                  if not line or ":" not in line:
+                      continue
+                  mod, dlist = line.split(":", 1)
+                  mod_base = os.path.basename(mod.strip())
+                  deps[mod_base] = [os.path.basename(d.strip()) for d in dlist.split() if d.strip()]
+
+          def read_list(path):
+              res = []
+              with open(path) as fh:
+                  for l in fh:
+                      l = l.strip()
+                      if l and not l.startswith("#"):
+                          res.append(os.path.basename(l))
+              return res
+
+          first_stage_load = read_list(os.path.join(common_dir, "modules.load.first_stage"))
+          vendor_dlkm_load = read_list(os.path.join(common_dir, "modules.load.vendor_dlkm"))
+
+          device_extras = {
+              "socrates": ["wl2866d.ko", "xiaomi_touch.ko", "goodix_core.ko", "goodix_fod.ko"],
+              "vermeer": ["wl2866d.ko", "wl2868c.ko", "xiaomi_touch.ko", "goodix_core.ko", "goodix_fod.ko"],
+              "fuxi": ["xiaomi_touch.ko", "fts_touch_spi.ko", "goodix_fod.ko"],
+              "nuwa": ["wl2866d.ko", "xiaomi_touch.ko", "fts_touch_spi.ko", "goodix_fod.ko"],
+          }
+          for m in device_extras.get(device, []):
+              if m not in vendor_dlkm_load:
+                  vendor_dlkm_load.append(m)
+
+          def expand_with_deps(seed_list):
+              selected = []
+              seen = set()
+              missing = []
+              def visit(m):
+                  if m in seen:
+                      return
+                  if m not in all_kos:
+                      missing.append(m)
+                      return
+                  seen.add(m)
+                  for d in deps.get(m, []):
+                      visit(d)
+                  selected.append(m)
+              for m in seed_list:
+                  visit(m)
+              return selected, sorted(set(missing))
+
+          fs_mods, fs_missing = expand_with_deps(first_stage_load)
+          dlkm_mods, dlkm_missing = expand_with_deps(vendor_dlkm_load)
+
+          def stage_partition(name, mods, load_order, dep_prefix):
+              part_root = os.path.join(out_parts, name)
+              part_kdir = os.path.join(part_root, "lib", "modules", kver)
+              os.makedirs(part_kdir, exist_ok=True)
+              for m in mods:
+                  shutil.copy2(all_kos[m], os.path.join(part_kdir, m))
+              subprocess.run(["depmod", "-b", part_root, kver], check=True)
+              # Rewrite modules.dep prefix to Android partition path (e.g. /vendor_dlkm/lib/modules/ or /lib/modules/)
+              dep_p = os.path.join(part_kdir, "modules.dep")
+              rewritten = []
+              with open(dep_p) as fh:
+                  for line in fh:
+                      if ":" not in line:
+                          continue
+                      left, right = line.strip().split(":", 1)
+                      l_out = dep_prefix + os.path.basename(left.strip())
+                      r_items = [dep_prefix + os.path.basename(x) for x in right.split() if x.strip()]
+                      rewritten.append(f"{l_out}: {' '.join(r_items)}".rstrip() + "\n")
+              with open(dep_p, "w") as fh:
+                  fh.writelines(rewritten)
+              with open(os.path.join(part_kdir, "modules.load"), "w") as fh:
+                  for m in load_order:
+                      if m in all_kos:
+                          fh.write(m + "\n")
+              return part_kdir
+
+          stage_partition("vendor_boot", fs_mods, first_stage_load, "/lib/modules/")
+          stage_partition("vendor_dlkm", dlkm_mods, vendor_dlkm_load, "/vendor_dlkm/lib/modules/")
+
+          report = [
+              f"Kernel Release: {kver}",
+              f"Device: {device}",
+              f"Total compiled .ko files: {len(all_kos)}",
+              f"vendor_boot (first_stage): {len(fs_mods)} modules (missing: {len(fs_missing)})",
+              f"vendor_dlkm: {len(dlkm_mods)} modules (missing: {len(dlkm_missing)})",
+          ]
+          if fs_missing:
+              report.append("Missing first_stage: " + ", ".join(fs_missing))
+          if dlkm_missing:
+              report.append("Missing vendor_dlkm: " + ", ".join(dlkm_missing))
+
+          text = "\n".join(report) + "\n"
+          print(text)
+          with open(report_path, "w") as fh:
+              fh.write(text)
+          PYEOF
+
+          # 1. Pack AnyKernel3 (boot Image)
+          git clone --depth=1 "${{ env.ANYKERNEL_REPO }}" "${WS}/AnyKernel3"
+          cd "${WS}/AnyKernel3"
+          rm -rf .git README.md
+          cp "${DIST_DIR}/Image" ./Image
+          cat <<EOF > anykernel.sh
+          ### AnyKernel3 Ramdisk Mod Script
+          ## osm0sis @ xda-developers
+
+          ### AnyKernel setup
+          properties() { '
+          kernel.string=Xiaomi SM8550 Full Kernel (${DEVICE}) - ${KERNEL_VER}
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=${DEVICE}
+          device.name2=
+          device.name3=
+          device.name4=
+          device.name5=
+          supported.versions=
+          supported.patchlevels=
+          supported.vendorpatchlevels=
+          '; } # end properties
+
+          ### AnyKernel install
+          BLOCK=boot;
+          IS_SLOT_DEVICE=1;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=auto;
+
+          . tools/ak3-core.sh;
+
+          split_boot;
+          flash_boot;
+          EOF
+          chmod 644 anykernel.sh
+
+          KSU_TAG=$([ "${{ steps.meta.outputs.ksu_variant }}" != "none" ] && echo "-${{ steps.meta.outputs.ksu_variant }}" || echo "")
+          BASE_TAG="sm8550-${DEVICE}-${{ steps.meta.outputs.lto_mode }}${KSU_TAG}-${{ steps.meta.outputs.build_date }}-${{ steps.meta.outputs.short_sha }}"
+          zip -r9 "${DIST_DIR}/AnyKernel3-boot-${BASE_TAG}.zip" ./* -x "*.zip"
+
+          # 2. Pack vendor_dlkm as KernelSU/Magisk overlay module zip
+          KSU_MOD="${WS}/out/ksu_vendor_dlkm"
+          mkdir -p "${KSU_MOD}/system/vendor_dlkm/lib/modules"
+          cp -a "${WS}/out/partitions/vendor_dlkm/lib/modules/${KERNEL_VER}/." "${KSU_MOD}/system/vendor_dlkm/lib/modules/"
+          cat <<EOF > "${KSU_MOD}/module.prop"
+          id=sm8550_vendor_dlkm_${DEVICE}
+          name=SM8550 Full Modules (${DEVICE})
+          version=${KERNEL_VER}
+          versionCode=$(date +%Y%m%d)
+          author=KuryxCherry
+          description=Compiled vendor_dlkm kernel modules matching ${KERNEL_VER} (modules ${{ steps.meta.outputs.mod_sha }})
+          EOF
+          cd "${KSU_MOD}"
+          zip -r9 "${DIST_DIR}/KSU-vendor_dlkm-${BASE_TAG}.zip" ./*
+
+          # 3. Pack vendor_boot first_stage modules tarball
+          tar -czf "${DIST_DIR}/vendor_boot-modules-${BASE_TAG}.tar.gz" \
+            -C "${WS}/out/partitions/vendor_boot/lib/modules/${KERNEL_VER}" .
+
+          ls -lh "${DIST_DIR}"
+
+      - name: 上传构建产物（Artifact）
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-kernel-sm8550-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.lto_mode }}-${{ steps.meta.outputs.short_sha }}
+          path: ${{ github.workspace }}/dist/*
+          retention-days: 14
+
+      - name: 发布 GitHub Release（可选）
+        if: inputs.upload_release == true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: full-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.build_date }}
+          name: "Xiaomi SM8550 Full Kernel (${{ steps.meta.outputs.device }}) - ${{ steps.package.outputs.kernel_release }}"
+          body: |
+            - **设备**: `${{ steps.meta.outputs.device }}`
+            - **内核版本**: `${{ steps.package.outputs.kernel_release }}`
+            - **主内核提交**: `${{ steps.meta.outputs.short_sha }}`
+            - **外置驱动提交**: `${{ steps.meta.outputs.mod_sha }}`
+            - **LTO 模式**: `${{ steps.meta.outputs.lto_mode }}`
+            - **KernelSU**: `${{ steps.meta.outputs.ksu_variant }}`
+          files: ${{ github.workspace }}/dist/*
