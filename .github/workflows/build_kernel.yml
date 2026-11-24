@@ -211,7 +211,7 @@ jobs:
           fi
 
           make -j"$(nproc)" "${MAKE_ARGS[@]}" olddefconfig
-          grep -E '^(CONFIG_TCP_CONG_BBR3|CONFIG_DEFAULT_TCP_CONG|CONFIG_NET_SCH_DEFAULT|CONFIG_DEFAULT_FQ|CONFIG_DEFAULT_NET_SCH|CONFIG_LRU_GEN_ENABLED|CONFIG_LTO_CLANG)' "${{ env.OUT_DIR }}/.config" || true
+          grep -E '^(CONFIG_TCP_CONG_BBR3|CONFIG_DEFAULT_TCP_CONG|CONFIG_NET_SCH_DEFAULT|CONFIG_DEFAULT_FQ|CONFIG_DEFAULT_NET_SCH|CONFIG_LRU_GEN_ENABLED|CONFIG_RCU_LAZY|CONFIG_LTO_CLANG|# CONFIG_RCU_LAZY_DEFAULT_OFF)' "${{ env.OUT_DIR }}/.config" || true
 
           JOBS="$(nproc)"
           if [ "${{ steps.meta.outputs.lto_mode }}" = "full" ]; then
