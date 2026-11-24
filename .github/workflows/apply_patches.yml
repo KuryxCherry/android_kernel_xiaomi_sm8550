@@ -1,0 +1,111 @@
+name: Apply Upstream Patches to Repo
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply_bbrv3:
+        description: "合入 TCP BBRv3 (android13-5.15-lts) 并自动更新 socrates 默认拥塞控制"
+        required: false
+        default: true
+        type: boolean
+      apply_f2fs_opt:
+        description: "合入 F2FS 拥塞与 fsync 优化到本仓库源码"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    name: Patch & Commit to Branch
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: 检出当前分支源码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 安装 patch 工具并配置 Git 身份
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends patch curl
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: 下载并合入已验证兼容 5.15 的上游补丁
+        run: |
+          mkdir -p /tmp/patches
+          CHANGED=0
+
+          apply_one() {
+            local TITLE="$1"
+            local URL="$2"
+            local FILE="$3"
+
+            curl -fSL -o "${FILE}" "${URL}"
+
+            if patch -p1 --dry-run --reverse --force < "${FILE}" >/dev/null 2>&1; then
+              echo "[SKIP] ${TITLE} 已存在于当前源码中，跳过。"
+              return 0
+            fi
+
+            echo "[APPLY] 正在合入: ${TITLE}"
+            patch -p1 --forward --fuzz=3 < "${FILE}"
+            git add -A
+            if ! git diff --cached --quiet; then
+              git commit -m "${TITLE}"
+              CHANGED=1
+            fi
+          }
+
+          if [ "${{ inputs.apply_bbrv3 }}" = "true" ]; then
+            apply_one \
+              "net: tcp: backport BBRv3 for android13-5.15-lts" \
+              "https://raw.githubusercontent.com/WildKernels/kernel_patches/refs/heads/main/common/bbrv3/0001-net-tcp-backport-BBRv3-to-android13-5.15-lts.patch" \
+              "/tmp/patches/bbrv3.patch"
+
+            # 根据 net/ipv4/Kconfig 自动适配 socrates_GKI.config 中的 BBRv3 配置项
+            CFG="arch/arm64/configs/vendor/socrates_GKI.config"
+            if grep -qE '^config TCP_CONG_BBR3\b' net/ipv4/Kconfig && [ -f "${CFG}" ]; then
+              if ! grep -q '^CONFIG_TCP_CONG_BBR3=y' "${CFG}"; then
+                sed -i '/^CONFIG_DEFAULT_BBR=y/d; /^CONFIG_DEFAULT_TCP_CONG=/d' "${CFG}"
+                cat <<'EOF' >> "${CFG}"
+
+# Enable BBRv3 as default TCP congestion control
+CONFIG_TCP_CONG_BBR3=y
+CONFIG_DEFAULT_BBR3=y
+CONFIG_DEFAULT_TCP_CONG="bbr3"
+EOF
+                if grep -qE '^config TCP_PLB\b' net/ipv4/Kconfig; then
+                  echo "CONFIG_TCP_PLB=y" >> "${CFG}"
+                fi
+                git add "${CFG}"
+                if ! git diff --cached --quiet; then
+                  git commit -m "arm64: configs: socrates: set BBRv3 as default TCP congestion control"
+                  CHANGED=1
+                fi
+              fi
+            fi
+          fi
+
+          if [ "${{ inputs.apply_f2fs_opt }}" = "true" ]; then
+            apply_one \
+              "fs: f2fs: reduce congestion stalls" \
+              "https://raw.githubusercontent.com/WildKernels/kernel_patches/refs/heads/main/common/f2fs_reduce_congestion.patch" \
+              "/tmp/patches/f2fs_reduce_congestion.patch"
+
+            apply_one \
+              "fs: f2fs: enlarge min fsync blocks" \
+              "https://raw.githubusercontent.com/WildKernels/kernel_patches/refs/heads/main/common/f2fs_enlarge_min_fsync_blocks.patch" \
+              "/tmp/patches/f2fs_enlarge_min_fsync_blocks.patch"
+          fi
+
+          if [ "${CHANGED}" = "1" ]; then
+            echo "=== 推送新提交回仓库分支 ${GITHUB_REF_NAME} ==="
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          else
+            echo "=== 没有需要提交的新改动 ==="
+          fi
