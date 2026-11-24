@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       device:
-        description: "目标设备（对应 arch/arm64/configs/vendor/<device>_GKI.config）"
+        description: "目标设备"
         required: true
         default: "socrates"
         type: choice
@@ -13,41 +13,8 @@ on:
           - fuxi
           - nuwa
           - vermeer
-          - gki_only
-      clang_toolchain:
-        description: "AOSP Clang 工具链（r596125 = Clang 22.0.2，与你真机环境一致）"
-        required: false
-        default: "r596125"
-        type: choice
-        options:
-          - r596125
-          - r450784e
-      enable_bbrv3:
-        description: "移植 TCP BBRv3（android13-5.15-lts 专用补丁）"
-        required: false
-        default: true
-        type: boolean
-      enable_f2fs_opt:
-        description: "移植 F2FS 优化（降低拥塞卡顿 + 优化 fsync 块阈值）"
-        required: false
-        default: true
-        type: boolean
-      enable_lz4_110:
-        description: "尝试移植 LZ4 1.10.0 + ARM64 汇编加速（原为 6.1 补丁，如 5.15 冲突会报错提示）"
-        required: false
-        default: true
-        type: boolean
-      ksu_variant:
-        description: "Root 方案集成（源码默认不含 KernelSU）"
-        required: false
-        default: "none"
-        type: choice
-        options:
-          - none
-          - kernelsu-next
-          - kernelsu
       enable_lto:
-        description: "Clang LTO 模式（建议先用 thin 快速验证补丁，稳过后再试 full）"
+        description: "Clang LTO 模式（thin 稳快；full 会自动开 ZRAM/Swap 保护）"
         required: false
         default: "thin"
         type: choice
@@ -55,28 +22,22 @@ on:
           - thin
           - full
           - none
+      ksu_variant:
+        description: "Root 方案（可选）"
+        required: false
+        default: "none"
+        type: choice
+        options:
+          - none
+          - kernelsu-next
+          - kernelsu
       disable_debug_info:
-        description: "关闭 DEBUG_INFO/BTF（默认保留完整 BTF；跑 full LTO 若仍 OOM 可勾选）"
+        description: "关闭 DEBUG_INFO/BTF（仅在 full LTO 内存不足时勾选）"
         required: false
         default: false
-        type: boolean
-      build_modules:
-        description: "同时编译内核模块（单刷 AnyKernel3 仅需 Image，关闭可提速并降内存）"
-        required: false
-        default: false
-        type: boolean
-      build_dtbs:
-        description: "同时编译设备树（单刷 AnyKernel3 仅需 Image，建议保持关闭）"
-        required: false
-        default: false
-        type: boolean
-      package_anykernel3:
-        description: "使用 AnyKernel3 打包可刷入 ZIP"
-        required: false
-        default: true
         type: boolean
       upload_release:
-        description: "将构建产物发布到 GitHub Releases"
+        description: "发布产物到 GitHub Releases"
         required: false
         default: false
         type: boolean
@@ -100,15 +61,15 @@ concurrency:
 
 env:
   KERNEL_DIR: sm8550
-  DT_DIR: sm8550-devicetrees
-  MODULES_DIR: sm8550-modules
   OUT_DIR: out
+  CLANG_VERSION: r596125
+  CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/mirror-goog-main-llvm-toolchain-source/clang-r596125.tar.gz
   ANYKERNEL_REPO: https://github.com/osm0sis/AnyKernel3.git
 
 jobs:
   build:
-    name: Build SM8550 Kernel (${{ inputs.device || 'socrates' }} / ${{ inputs.clang_toolchain || 'r596125' }} / ${{ inputs.enable_lto || 'thin' }})
-    # Ubuntu 24.04 自带 dwarves (pahole 1.25)，与真机 CONFIG_PAHOLE_VERSION=125 对齐
+    name: Build SM8550 (${{ inputs.device || 'socrates' }} / ${{ inputs.enable_lto || 'thin' }})
+    # Ubuntu 24.04 自带 pahole 1.25 + Clang 22.0.2 (r596125)，与 LineageOS 24.0 真机环境一致
     runs-on: ubuntu-24.04
     timeout-minutes: 350
 
@@ -118,7 +79,7 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h
 
-      - name: 配置 ZRAM 压缩内存 + 24GB 磁盘 Swap（Full LTO 极限防 OOM 与防失联）
+      - name: 配置 ZRAM + 24GB Swap（仅 Full LTO 启用）
         if: ${{ (inputs.enable_lto || 'thin') == 'full' }}
         run: |
           if sudo modprobe zram 2>/dev/null; then
@@ -126,22 +87,16 @@ jobs:
             if [ -n "${ZRAM_DEV}" ]; then
               sudo mkswap "${ZRAM_DEV}"
               sudo swapon -p 100 "${ZRAM_DEV}"
-              echo "Enabled ZRAM swap on ${ZRAM_DEV} (priority 100)"
             fi
           fi
 
           MNT_AVAIL_GB=$(df -BG --output=avail /mnt 2>/dev/null | tail -1 | tr -dc '0-9' || echo 0)
-          if [ "${MNT_AVAIL_GB:-0}" -ge 28 ]; then
-            SWAP_PATH="/mnt/swapfile"
-          else
-            SWAP_PATH="/swapfile"
-          fi
+          SWAP_PATH=$([ "${MNT_AVAIL_GB:-0}" -ge 28 ] && echo "/mnt/swapfile" || echo "/swapfile")
           sudo fallocate -l 24G "${SWAP_PATH}"
           sudo chmod 600 "${SWAP_PATH}"
           sudo mkswap "${SWAP_PATH}"
           sudo swapon -p 10 "${SWAP_PATH}"
           sudo sysctl -w vm.swappiness=100 vm.page-cluster=0
-          swapon --show
           free -h
 
       - name: 安装编译依赖（含 pahole 1.25）
@@ -150,127 +105,33 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             bc bison build-essential ccache cpio curl device-tree-compiler \
             dwarves flex git kmod libelf-dev libncurses-dev libssl-dev \
-            lz4 patch python3 rsync tar unzip wget xz-utils zip zstd
+            lz4 python3 rsync tar unzip wget xz-utils zip zstd
           pahole --version
 
-      - name: 拉取内核源码
+      - name: 拉取本仓库内核源码
         uses: actions/checkout@v4
         with:
           path: ${{ env.KERNEL_DIR }}
           fetch-depth: 1
 
-      - name: 拉取配套设备树仓库（sm8550-devicetrees，仅开启 build_dtbs 时）
-        if: ${{ inputs.build_dtbs == true }}
-        uses: actions/checkout@v4
-        with:
-          repository: LineageOS/android_kernel_xiaomi_sm8550-devicetrees
-          ref: lineage-24.0
-          path: ${{ env.DT_DIR }}
-          fetch-depth: 1
-
-      - name: 拉取外部模块仓库以补齐设备树头文件（sm8550-modules，仅开启 build_dtbs 时）
-        if: ${{ inputs.build_dtbs == true }}
-        uses: actions/checkout@v4
-        with:
-          repository: LineageOS/android_kernel_xiaomi_sm8550-modules
-          ref: lineage-24.0
-          path: ${{ env.MODULES_DIR }}
-          fetch-depth: 1
-
-      - name: 校验设备树软链接并同步 vendor dt-bindings 头文件
-        if: ${{ inputs.build_dtbs == true }}
-        run: |
-          ls -la "${{ env.KERNEL_DIR }}/arch/arm64/boot/dts/vendor"
-          test -d "${{ env.KERNEL_DIR }}/arch/arm64/boot/dts/vendor"
-          mkdir -p "${{ env.KERNEL_DIR }}/scripts/dtc/include-prefixes/bindings"
-          mkdir -p "${{ env.KERNEL_DIR }}/scripts/dtc/include-prefixes/dt-bindings"
-          find "${{ env.MODULES_DIR }}" -type d -name "bindings" -exec sh -c 'cp -rn "$1"/* "$2"/ 2>/dev/null || true' _ {} "${{ env.KERNEL_DIR }}/scripts/dtc/include-prefixes/bindings" \;
-          find "${{ env.MODULES_DIR }}" -type d -name "dt-bindings" -exec sh -c 'cp -rn "$1"/* "$2"/ 2>/dev/null || true' _ {} "${{ env.KERNEL_DIR }}/scripts/dtc/include-prefixes/dt-bindings" \;
-
-      - name: 解析构建参数与 Clang 版本
+      - name: 解析构建参数
         id: meta
         run: |
           DEVICE="${{ inputs.device || 'socrates' }}"
-          CLANG_VERSION="${{ inputs.clang_toolchain || 'r596125' }}"
-          KSU_VARIANT="${{ inputs.ksu_variant || 'none' }}"
           LTO_MODE="${{ inputs.enable_lto || 'thin' }}"
-          ENABLE_BBRV3="${{ inputs.enable_bbrv3 != false && 'true' || 'false' }}"
-          ENABLE_F2FS_OPT="${{ inputs.enable_f2fs_opt != false && 'true' || 'false' }}"
-          ENABLE_LZ4_110="${{ inputs.enable_lz4_110 != false && 'true' || 'false' }}"
+          KSU_VARIANT="${{ inputs.ksu_variant || 'none' }}"
           DISABLE_DEBUG_INFO="${{ inputs.disable_debug_info == true && 'true' || 'false' }}"
-          BUILD_MODULES="${{ inputs.build_modules == true && 'true' || 'false' }}"
-          BUILD_DTBS="${{ inputs.build_dtbs == true && 'true' || 'false' }}"
-          PACKAGE_AK3="${{ inputs.package_anykernel3 != false && 'true' || 'false' }}"
-
-          if [ "${CLANG_VERSION}" = "r596125" ]; then
-            CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/mirror-goog-main-llvm-toolchain-source/clang-r596125.tar.gz"
-          else
-            CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android14-release/clang-${CLANG_VERSION}.tar.gz"
-          fi
-
           SHORT_SHA=$(git -C "${{ env.KERNEL_DIR }}" rev-parse --short HEAD)
           BUILD_DATE=$(date +%Y%m%d-%H%M)
 
           {
             echo "device=${DEVICE}"
-            echo "ksu_variant=${KSU_VARIANT}"
             echo "lto_mode=${LTO_MODE}"
-            echo "enable_bbrv3=${ENABLE_BBRV3}"
-            echo "enable_f2fs_opt=${ENABLE_F2FS_OPT}"
-            echo "enable_lz4_110=${ENABLE_LZ4_110}"
+            echo "ksu_variant=${KSU_VARIANT}"
             echo "disable_debug_info=${DISABLE_DEBUG_INFO}"
-            echo "build_modules=${BUILD_MODULES}"
-            echo "build_dtbs=${BUILD_DTBS}"
-            echo "package_ak3=${PACKAGE_AK3}"
-            echo "clang_version=${CLANG_VERSION}"
-            echo "clang_url=${CLANG_URL}"
             echo "short_sha=${SHORT_SHA}"
             echo "build_date=${BUILD_DATE}"
           } >> "$GITHUB_OUTPUT"
-
-          echo "Device=${DEVICE} | Clang=${CLANG_VERSION} | LTO=${LTO_MODE} | BBRv3=${ENABLE_BBRV3} | F2FS=${ENABLE_F2FS_OPT} | LZ4=${ENABLE_LZ4_110} | Commit=${SHORT_SHA}"
-
-      - name: 应用上游移植补丁（BBRv3 / F2FS / LZ4 1.10）与仓库本地 patches/
-        working-directory: ${{ env.KERNEL_DIR }}
-        run: |
-          mkdir -p /tmp/upstream_patches
-
-          if [ "${{ steps.meta.outputs.enable_bbrv3 }}" = "true" ]; then
-            echo "=== [1/4] Applying BBRv3 for android13-5.15-lts ==="
-            curl -fSL -o /tmp/upstream_patches/bbrv3.patch \
-              "https://raw.githubusercontent.com/WildKernels/kernel_patches/refs/heads/main/common/bbrv3/0001-net-tcp-backport-BBRv3-to-android13-5.15-lts.patch"
-            patch -p1 --forward --fuzz=3 < /tmp/upstream_patches/bbrv3.patch
-          fi
-
-          if [ "${{ steps.meta.outputs.enable_f2fs_opt }}" = "true" ]; then
-            echo "=== [2/4] Applying F2FS congestion & fsync optimizations ==="
-            curl -fSL -o /tmp/upstream_patches/f2fs_reduce_congestion.patch \
-              "https://raw.githubusercontent.com/WildKernels/kernel_patches/refs/heads/main/common/f2fs_reduce_congestion.patch"
-            curl -fSL -o /tmp/upstream_patches/f2fs_enlarge_min_fsync_blocks.patch \
-              "https://raw.githubusercontent.com/WildKernels/kernel_patches/refs/heads/main/common/f2fs_enlarge_min_fsync_blocks.patch"
-            patch -p1 --forward --fuzz=3 < /tmp/upstream_patches/f2fs_reduce_congestion.patch
-            patch -p1 --forward --fuzz=3 < /tmp/upstream_patches/f2fs_enlarge_min_fsync_blocks.patch
-          fi
-
-          if [ "${{ steps.meta.outputs.enable_lz4_110 }}" = "true" ]; then
-            echo "=== [3/4] Applying LZ4 1.10.0 + ARM64 ASM acceleration ==="
-            curl -fSL -o /tmp/upstream_patches/001-lz4.patch \
-              "https://raw.githubusercontent.com/furrybluelan/oppo_oplus_realme_sm8650/refs/heads/main/zram_patch/001-lz4.patch"
-            curl -fSL -o lib/lz4/lz4armv8.S \
-              "https://raw.githubusercontent.com/furrybluelan/oppo_oplus_realme_sm8650/refs/heads/main/zram_patch/lz4armv8.S"
-            patch -p1 --forward --fuzz=3 < /tmp/upstream_patches/001-lz4.patch
-          fi
-
-          if [ -d "patches" ]; then
-            echo "=== [4/4] Applying local repository patches/*.patch ==="
-            for p in patches/*.patch; do
-              [ -e "$p" ] || continue
-              echo "Applying local patch: $p"
-              patch -p1 --forward --fuzz=3 < "$p"
-            done
-          fi
-
-          git status --short
 
       - name: 集成 KernelSU / KernelSU-Next（可选）
         if: ${{ steps.meta.outputs.ksu_variant != 'none' }}
@@ -285,99 +146,36 @@ jobs:
               ;;
           esac
 
-      - name: 缓存 AOSP Clang 工具链
+      - name: 缓存 AOSP Clang 22.0.2 (r596125)
         id: clang-cache
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/toolchain/clang
-          key: aosp-clang-${{ steps.meta.outputs.clang_version }}
+          key: aosp-clang-${{ env.CLANG_VERSION }}
 
-      - name: 下载 AOSP Clang 工具链
+      - name: 下载 AOSP Clang 22.0.2 (r596125)
         if: steps.clang-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p "${{ github.workspace }}/toolchain/clang"
-          echo "Downloading Clang from: ${{ steps.meta.outputs.clang_url }}"
-          curl -fSL "${{ steps.meta.outputs.clang_url }}" | tar -xz -C "${{ github.workspace }}/toolchain/clang"
-
-      - name: 校验 Clang 与 LLD 版本
-        run: |
-          export PATH="${{ github.workspace }}/toolchain/clang/bin:${PATH}"
-          clang --version
-          ld.lld --version
+          curl -fSL "${{ env.CLANG_URL }}" | tar -xz -C "${{ github.workspace }}/toolchain/clang"
 
       - name: 缓存 ccache
         uses: actions/cache@v4
         with:
           path: ~/.ccache
-          key: ccache-sm8550-${{ steps.meta.outputs.clang_version }}-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.ksu_variant }}-${{ github.sha }}
+          key: ccache-sm8550-${{ env.CLANG_VERSION }}-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.ksu_variant }}-${{ github.sha }}
           restore-keys: |
-            ccache-sm8550-${{ steps.meta.outputs.clang_version }}-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.ksu_variant }}-
-            ccache-sm8550-${{ steps.meta.outputs.clang_version }}-${{ steps.meta.outputs.device }}-
-            ccache-sm8550-${{ steps.meta.outputs.clang_version }}-
+            ccache-sm8550-${{ env.CLANG_VERSION }}-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.ksu_variant }}-
+            ccache-sm8550-${{ env.CLANG_VERSION }}-${{ steps.meta.outputs.device }}-
+            ccache-sm8550-${{ env.CLANG_VERSION }}-
 
-      - name: 配置内核（defconfig 合并与 LTO 选项）
+      - name: 配置并编译内核 Image
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
           export PATH="${{ github.workspace }}/toolchain/clang/bin:${PATH}"
           export KBUILD_BUILD_USER="github-actions"
           export KBUILD_BUILD_HOST="sm8550-ci"
-
-          MAKE_ARGS=(
-            O="${{ env.OUT_DIR }}"
-            ARCH=arm64
-            SUBARCH=arm64
-            CC="ccache clang"
-            HOSTCC=clang
-            HOSTCXX=clang++
-            LLVM=1
-            LLVM_IAS=1
-            DEPMOD=depmod
-            DTC_EXT="$(command -v dtc)"
-          )
-
-          CONFIG_FRAGMENTS=(gki_defconfig vendor/kalama_GKI.config)
-          if [ "${{ steps.meta.outputs.device }}" != "gki_only" ]; then
-            DEVICE_CFG="vendor/${{ steps.meta.outputs.device }}_GKI.config"
-            test -f "arch/arm64/configs/${DEVICE_CFG}"
-            CONFIG_FRAGMENTS+=("${DEVICE_CFG}")
-          fi
-
-          echo "Merging configs: ${CONFIG_FRAGMENTS[*]}"
-          make -j"$(nproc)" "${MAKE_ARGS[@]}" "${CONFIG_FRAGMENTS[@]}"
-
-          case "${{ steps.meta.outputs.lto_mode }}" in
-            full)
-              ./scripts/config --file "${{ env.OUT_DIR }}/.config" \
-                -d LTO_NONE -d LTO_CLANG_THIN -e LTO_CLANG_FULL
-              ;;
-            thin)
-              ./scripts/config --file "${{ env.OUT_DIR }}/.config" \
-                -d LTO_NONE -d LTO_CLANG_FULL -e LTO_CLANG_THIN
-              ;;
-            none)
-              ./scripts/config --file "${{ env.OUT_DIR }}/.config" \
-                -d LTO_CLANG_THIN -d LTO_CLANG_FULL -e LTO_NONE
-              ;;
-          esac
-
-          if [ "${{ steps.meta.outputs.disable_debug_info }}" = "true" ]; then
-            ./scripts/config --file "${{ env.OUT_DIR }}/.config" \
-              -d DEBUG_INFO -d DEBUG_INFO_DWARF4 -d DEBUG_INFO_DWARF5 \
-              -d DEBUG_INFO_BTF -d DEBUG_INFO_BTF_MODULES
-          fi
-
-          if [ "${{ steps.meta.outputs.ksu_variant }}" != "none" ]; then
-            ./scripts/config --file "${{ env.OUT_DIR }}/.config" -e KSU -e KPROBES -e OVERLAY_FS
-          fi
-
-          make -j"$(nproc)" "${MAKE_ARGS[@]}" olddefconfig
-
-      - name: 编译内核镜像（含内存监控与低优先级限流保护）
-        working-directory: ${{ env.KERNEL_DIR }}
-        run: |
-          export PATH="${{ github.workspace }}/toolchain/clang/bin:${PATH}"
-          export KBUILD_BUILD_USER="github-actions"
-          export KBUILD_BUILD_HOST="sm8550-ci"
+          clang --version
           ccache -M 4G
           ccache -z
 
@@ -394,6 +192,26 @@ jobs:
             DTC_EXT="$(command -v dtc)"
           )
 
+          make -j"$(nproc)" "${MAKE_ARGS[@]}" gki_defconfig vendor/kalama_GKI.config "vendor/${{ steps.meta.outputs.device }}_GKI.config"
+
+          case "${{ steps.meta.outputs.lto_mode }}" in
+            full) ./scripts/config --file "${{ env.OUT_DIR }}/.config" -d LTO_NONE -d LTO_CLANG_THIN -e LTO_CLANG_FULL ;;
+            thin) ./scripts/config --file "${{ env.OUT_DIR }}/.config" -d LTO_NONE -d LTO_CLANG_FULL -e LTO_CLANG_THIN ;;
+            none) ./scripts/config --file "${{ env.OUT_DIR }}/.config" -d LTO_CLANG_THIN -d LTO_CLANG_FULL -e LTO_NONE ;;
+          esac
+
+          if [ "${{ steps.meta.outputs.disable_debug_info }}" = "true" ]; then
+            ./scripts/config --file "${{ env.OUT_DIR }}/.config" \
+              -d DEBUG_INFO -d DEBUG_INFO_DWARF4 -d DEBUG_INFO_DWARF5 \
+              -d DEBUG_INFO_BTF -d DEBUG_INFO_BTF_MODULES
+          fi
+
+          if [ "${{ steps.meta.outputs.ksu_variant }}" != "none" ]; then
+            ./scripts/config --file "${{ env.OUT_DIR }}/.config" -e KSU -e KPROBES -e OVERLAY_FS
+          fi
+
+          make -j"$(nproc)" "${MAKE_ARGS[@]}" olddefconfig
+
           JOBS="$(nproc)"
           if [ "${{ steps.meta.outputs.lto_mode }}" = "full" ]; then
             JOBS=2
@@ -409,73 +227,45 @@ jobs:
             while true; do
               sleep 60
               echo "[MEM-MON $(date -u +%H:%M:%S)] $(free -h | awk '/Mem:/{printf "RAM %s/%s (avail %s)", $3,$2,$7} /Swap:/{printf " | Swap %s/%s", $3,$2}')"
-              ps -eo comm,rss --sort=-rss | head -n 4 | awk 'NR>1{printf "  top: %s %.1fGB\n", $1, $2/1048576}'
             done
           ) &
           MON_PID=$!
           trap 'kill "${MON_PID}" 2>/dev/null || true' EXIT
 
           ionice -c 3 nice -n 19 make -j"${JOBS}" "${MAKE_ARGS[@]}" Image
-
-          if [ "${{ steps.meta.outputs.build_modules }}" = "true" ]; then
-            ionice -c 3 nice -n 19 make -j"${JOBS}" "${MAKE_ARGS[@]}" modules
-          fi
-
-          if [ "${{ steps.meta.outputs.build_dtbs }}" = "true" ]; then
-            ionice -c 3 nice -n 19 make -j"${JOBS}" "${MAKE_ARGS[@]}" dtbs
-          fi
-
           ccache -s
 
-      - name: 收集构建产物并打包 AnyKernel3
+      - name: 打包 AnyKernel3 刷入包
         id: package
         run: |
           DIST_DIR="${{ github.workspace }}/dist"
-          BOOT_OUT="${{ github.workspace }}/${{ env.KERNEL_DIR }}/${{ env.OUT_DIR }}/arch/arm64/boot"
+          OUT_ABS="${{ github.workspace }}/${{ env.KERNEL_DIR }}/${{ env.OUT_DIR }}"
           mkdir -p "${DIST_DIR}"
 
-          cp "${BOOT_OUT}/Image" "${DIST_DIR}/Image"
-          cp "${{ github.workspace }}/${{ env.KERNEL_DIR }}/${{ env.OUT_DIR }}/.config" "${DIST_DIR}/defconfig_used"
+          cp "${OUT_ABS}/arch/arm64/boot/Image" "${DIST_DIR}/Image"
+          cp "${OUT_ABS}/.config" "${DIST_DIR}/defconfig_used"
 
-          KERNEL_VER=$(cat "${{ github.workspace }}/${{ env.KERNEL_DIR }}/${{ env.OUT_DIR }}/include/config/kernel.release" 2>/dev/null || echo "5.15-sm8550")
+          KERNEL_VER=$(cat "${OUT_ABS}/include/config/kernel.release" 2>/dev/null || echo "5.15-sm8550")
           echo "kernel_release=${KERNEL_VER}" >> "$GITHUB_OUTPUT"
 
-          if [ "${{ steps.meta.outputs.build_dtbs }}" = "true" ] && [ -d "${BOOT_OUT}/dts" ]; then
-            find "${BOOT_OUT}/dts" -name '*.dtb' -exec cat {} + > "${DIST_DIR}/dtb" || true
-            if [ ! -s "${DIST_DIR}/dtb" ]; then
-              rm -f "${DIST_DIR}/dtb"
-            fi
-          fi
+          git clone --depth=1 "${{ env.ANYKERNEL_REPO }}" "${{ github.workspace }}/AnyKernel3"
+          cd "${{ github.workspace }}/AnyKernel3"
+          rm -rf .git README.md
+          cp "${DIST_DIR}/Image" ./Image
 
-          if [ "${{ steps.meta.outputs.package_ak3 }}" = "true" ]; then
-            git clone --depth=1 "${{ env.ANYKERNEL_REPO }}" "${{ github.workspace }}/AnyKernel3"
-            cd "${{ github.workspace }}/AnyKernel3"
-            rm -rf .git README.md
-            cp "${DIST_DIR}/Image" ./Image
-            if [ -f "${DIST_DIR}/dtb" ]; then
-              cp "${DIST_DIR}/dtb" ./dtb
-            fi
+          sed -i 's/do\.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          sed -i 's|block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;|block=auto;|g' anykernel.sh
+          sed -i 's/is_slot_device=0;/is_slot_device=1;/g' anykernel.sh
 
-            sed -i 's/do\.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-            sed -i 's|block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;|block=auto;|g' anykernel.sh
-            sed -i 's/is_slot_device=0;/is_slot_device=1;/g' anykernel.sh
-
-            KSU_TAG=""
-            if [ "${{ steps.meta.outputs.ksu_variant }}" != "none" ]; then
-              KSU_TAG="-${{ steps.meta.outputs.ksu_variant }}"
-            fi
-
-            ZIP_NAME="AnyKernel3-sm8550-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.clang_version }}-${{ steps.meta.outputs.lto_mode }}${KSU_TAG}-${{ steps.meta.outputs.build_date }}-${{ steps.meta.outputs.short_sha }}.zip"
-            zip -r9 "${DIST_DIR}/${ZIP_NAME}" ./* -x "*.zip"
-            echo "zip_name=${ZIP_NAME}" >> "$GITHUB_OUTPUT"
-          fi
-
+          KSU_TAG=$([ "${{ steps.meta.outputs.ksu_variant }}" != "none" ] && echo "-${{ steps.meta.outputs.ksu_variant }}" || echo "")
+          ZIP_NAME="AnyKernel3-sm8550-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.lto_mode }}${KSU_TAG}-${{ steps.meta.outputs.build_date }}-${{ steps.meta.outputs.short_sha }}.zip"
+          zip -r9 "${DIST_DIR}/${ZIP_NAME}" ./* -x "*.zip"
           ls -lh "${DIST_DIR}"
 
       - name: 上传构建产物（Artifact）
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-sm8550-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.clang_version }}-${{ steps.meta.outputs.lto_mode }}-${{ steps.meta.outputs.ksu_variant }}-${{ steps.meta.outputs.short_sha }}
+          name: kernel-sm8550-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.lto_mode }}-${{ steps.meta.outputs.ksu_variant }}-${{ steps.meta.outputs.short_sha }}
           path: ${{ github.workspace }}/dist/*
           retention-days: 14
 
@@ -486,11 +276,10 @@ jobs:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('build-{0}-{1}', steps.meta.outputs.device, steps.meta.outputs.build_date) }}
           name: "Xiaomi SM8550 Kernel (${{ steps.meta.outputs.device }}) - ${{ steps.package.outputs.kernel_release }}"
           body: |
-            - **设备配置**: `${{ steps.meta.outputs.device }}`
+            - **设备**: `${{ steps.meta.outputs.device }}`
             - **内核版本**: `${{ steps.package.outputs.kernel_release }}`
-            - **Clang 版本**: `${{ steps.meta.outputs.clang_version }}`
+            - **工具链**: `AOSP Clang 22.0.2 (r596125)`
             - **LTO 模式**: `${{ steps.meta.outputs.lto_mode }}`
-            - **移植补丁**: `BBRv3=${{ steps.meta.outputs.enable_bbrv3 }}, F2FS=${{ steps.meta.outputs.enable_f2fs_opt }}, LZ4_1.10=${{ steps.meta.outputs.enable_lz4_110 }}`
-            - **KernelSU 方案**: `${{ steps.meta.outputs.ksu_variant }}`
+            - **KernelSU**: `${{ steps.meta.outputs.ksu_variant }}`
             - **源码提交**: `${{ github.sha }}`
           files: ${{ github.workspace }}/dist/*
