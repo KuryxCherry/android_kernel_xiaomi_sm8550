@@ -72,14 +72,15 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h
 
-      - name: 安装编译依赖（含 pahole 1.25）
+      - name: 安装编译与镜像打包依赖（含 pahole 1.25、erofs-utils）
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bc bison build-essential ccache cpio curl device-tree-compiler \
-            dwarves flex git kmod libelf-dev libncurses-dev libssl-dev \
+            dwarves erofs-utils flex git kmod libelf-dev libncurses-dev libssl-dev \
             lz4 python3 rsync tar unzip wget xz-utils zip zstd
           pahole --version
+          mkfs.erofs --version
 
       - name: 拉取主内核源码（kernel/xiaomi/sm8550）
         uses: actions/checkout@v4
@@ -279,7 +280,7 @@ jobs:
           echo "=== Total .ko modules compiled (in-tree + external) ==="
           find "${MOD_STAGE}" -name '*.ko' | wc -l
 
-      - name: 分拣模块、生成 depmod 依赖树并打包产物
+      - name: 分拣模块、生成 EROFS vendor_dlkm.img 并打包三合一 AnyKernel3 刷入包
         id: package
         run: |
           set -euo pipefail
@@ -297,7 +298,7 @@ jobs:
           cp "${KERNEL_OUT}/arch/arm64/boot/Image" "${DIST_DIR}/Image"
           cp "${KERNEL_OUT}/.config" "${DIST_DIR}/defconfig_used"
 
-          # Stage flat modules and verify against official modules.load.* manifests
+          # Stage first_stage, recovery, and vendor_dlkm with full depmod resolution
           python3 - "${MOD_STAGE}" "${COMMON_DIR}" "${WS}/out/partitions" "${KERNEL_VER}" "${DEVICE}" "${DIST_DIR}/module_report.txt" <<'PYEOF'
           import os, sys, shutil, subprocess
 
@@ -310,7 +311,6 @@ jobs:
                   if f.endswith(".ko"):
                       all_kos[f] = os.path.join(root, f)
 
-          # Run depmod on a flat staging tree to compute exact dependency graph
           flat_root = os.path.join(out_parts, "_all_flat")
           flat_kdir = os.path.join(flat_root, "lib", "modules", kver)
           os.makedirs(flat_kdir, exist_ok=True)
@@ -323,15 +323,13 @@ jobs:
           subprocess.run(["depmod", "-b", flat_root, kver], check=True)
 
           deps = {}
-          dep_file = os.path.join(flat_kdir, "modules.dep")
-          with open(dep_file) as fh:
+          with open(os.path.join(flat_kdir, "modules.dep")) as fh:
               for line in fh:
                   line = line.strip()
                   if not line or ":" not in line:
                       continue
                   mod, dlist = line.split(":", 1)
-                  mod_base = os.path.basename(mod.strip())
-                  deps[mod_base] = [os.path.basename(d.strip()) for d in dlist.split() if d.strip()]
+                  deps[os.path.basename(mod.strip())] = [os.path.basename(d.strip()) for d in dlist.split() if d.strip()]
 
           def read_list(path):
               res = []
@@ -343,17 +341,27 @@ jobs:
               return res
 
           first_stage_load = read_list(os.path.join(common_dir, "modules.load.first_stage"))
+          recovery_load = read_list(os.path.join(common_dir, "modules.load.recovery"))
           vendor_dlkm_load = read_list(os.path.join(common_dir, "modules.load.vendor_dlkm"))
 
-          device_extras = {
+          device_dlkm_extras = {
               "socrates": ["wl2866d.ko", "xiaomi_touch.ko", "goodix_core.ko", "goodix_fod.ko"],
               "vermeer": ["wl2866d.ko", "wl2868c.ko", "xiaomi_touch.ko", "goodix_core.ko", "goodix_fod.ko"],
               "fuxi": ["xiaomi_touch.ko", "fts_touch_spi.ko", "goodix_fod.ko"],
               "nuwa": ["wl2866d.ko", "xiaomi_touch.ko", "fts_touch_spi.ko", "goodix_fod.ko"],
           }
-          for m in device_extras.get(device, []):
+          device_rec_extras = {
+              "socrates": ["goodix_core.ko"],
+              "vermeer": ["goodix_core.ko"],
+              "fuxi": ["fts_touch_spi.ko"],
+              "nuwa": ["fts_touch_spi.ko"],
+          }
+          for m in device_dlkm_extras.get(device, []):
               if m not in vendor_dlkm_load:
                   vendor_dlkm_load.append(m)
+          for m in device_rec_extras.get(device, []):
+              if m not in recovery_load:
+                  recovery_load.append(m)
 
           def expand_with_deps(seed_list):
               selected = []
@@ -374,6 +382,7 @@ jobs:
               return selected, sorted(set(missing))
 
           fs_mods, fs_missing = expand_with_deps(first_stage_load)
+          rec_mods, rec_missing = expand_with_deps(recovery_load)
           dlkm_mods, dlkm_missing = expand_with_deps(vendor_dlkm_load)
 
           def stage_partition(name, mods, load_order, dep_prefix):
@@ -383,7 +392,6 @@ jobs:
               for m in mods:
                   shutil.copy2(all_kos[m], os.path.join(part_kdir, m))
               subprocess.run(["depmod", "-b", part_root, kver], check=True)
-              # Rewrite modules.dep prefix to Android partition path (e.g. /vendor_dlkm/lib/modules/ or /lib/modules/)
               dep_p = os.path.join(part_kdir, "modules.dep")
               rewritten = []
               with open(dep_p) as fh:
@@ -396,24 +404,33 @@ jobs:
                       rewritten.append(f"{l_out}: {' '.join(r_items)}".rstrip() + "\n")
               with open(dep_p, "w") as fh:
                   fh.writelines(rewritten)
+              # Keep only the 4 runtime files Android modprobe uses
+              for fn in list(os.listdir(part_kdir)):
+                  if fn.endswith(".ko") or fn in ("modules.dep", "modules.alias", "modules.softdep"):
+                      continue
+                  os.remove(os.path.join(part_kdir, fn))
               with open(os.path.join(part_kdir, "modules.load"), "w") as fh:
                   for m in load_order:
                       if m in all_kos:
                           fh.write(m + "\n")
               return part_kdir
 
-          stage_partition("vendor_boot", fs_mods, first_stage_load, "/lib/modules/")
+          stage_partition("first_stage", fs_mods, first_stage_load, "/lib/modules/")
+          stage_partition("recovery", rec_mods, recovery_load, "/lib/modules/")
           stage_partition("vendor_dlkm", dlkm_mods, vendor_dlkm_load, "/vendor_dlkm/lib/modules/")
 
           report = [
               f"Kernel Release: {kver}",
               f"Device: {device}",
               f"Total compiled .ko files: {len(all_kos)}",
-              f"vendor_boot (first_stage): {len(fs_mods)} modules (missing: {len(fs_missing)})",
+              f"vendor_boot first_stage: {len(fs_mods)} modules (missing: {len(fs_missing)})",
+              f"vendor_boot recovery: {len(rec_mods)} modules (missing: {len(rec_missing)})",
               f"vendor_dlkm: {len(dlkm_mods)} modules (missing: {len(dlkm_missing)})",
           ]
           if fs_missing:
               report.append("Missing first_stage: " + ", ".join(fs_missing))
+          if rec_missing:
+              report.append("Missing recovery: " + ", ".join(rec_missing))
           if dlkm_missing:
               report.append("Missing vendor_dlkm: " + ", ".join(dlkm_missing))
 
@@ -421,23 +438,73 @@ jobs:
           print(text)
           with open(report_path, "w") as fh:
               fh.write(text)
+
+          if fs_missing or dlkm_missing:
+              sys.stderr.write("ERROR: Critical modules missing! Aborting package build.\n")
+              sys.exit(1)
           PYEOF
 
-          # 1. Pack AnyKernel3 (boot Image)
+          # Build SELinux-labeled EROFS vendor_dlkm.img (LZ4HC compressed)
+          EROFS_SRC="${WS}/out/erofs_vendor_dlkm"
+          rm -rf "${EROFS_SRC}"
+          mkdir -p "${EROFS_SRC}/lib/modules" "${EROFS_SRC}/etc"
+          cp -a "${WS}/out/partitions/vendor_dlkm/lib/modules/${KERNEL_VER}/." "${EROFS_SRC}/lib/modules/"
+          chmod 755 "${EROFS_SRC}" "${EROFS_SRC}/lib" "${EROFS_SRC}/lib/modules" "${EROFS_SRC}/etc"
+          chmod 644 "${EROFS_SRC}/lib/modules/"*
+
+          case "${DEVICE}" in
+            socrates) BRAND="Redmi"; MODEL="22127RK46C" ;;
+            vermeer)  BRAND="Redmi"; MODEL="23113RKC6C" ;;
+            fuxi)     BRAND="Xiaomi"; MODEL="2211133C" ;;
+            nuwa)     BRAND="Xiaomi"; MODEL="2210132C" ;;
+            *)        BRAND="Xiaomi"; MODEL="${DEVICE}" ;;
+          esac
+          cat <<EOF > "${EROFS_SRC}/etc/build.prop"
+          ro.product.vendor_dlkm.brand=${BRAND}
+          ro.product.vendor_dlkm.device=${DEVICE}
+          ro.product.vendor_dlkm.manufacturer=Xiaomi
+          ro.product.vendor_dlkm.model=${MODEL}
+          ro.product.vendor_dlkm.name=${DEVICE}
+          EOF
+          touch "${EROFS_SRC}/etc/fs_config_dirs" "${EROFS_SRC}/etc/fs_config_files"
+          chmod 644 "${EROFS_SRC}/etc/"*
+
+          FC_FILE="${WS}/out/vendor_dlkm_file_contexts"
+          cat <<'EOF' > "${FC_FILE}"
+          /vendor_dlkm(/.*)?                  u:object_r:vendor_file:s0
+          /vendor_dlkm/etc(/.*)?              u:object_r:vendor_configs_file:s0
+          EOF
+
+          mkfs.erofs -zlz4hc,9 \
+            --mount-point=/vendor_dlkm \
+            --file-contexts="${FC_FILE}" \
+            --force-uid=0 --force-gid=0 \
+            -T 1230768000 \
+            "${DIST_DIR}/vendor_dlkm.img" \
+            "${EROFS_SRC}"
+
+          DLKM_SIZE=$(wc -c < "${DIST_DIR}/vendor_dlkm.img")
+          echo "vendor_dlkm.img size: ${DLKM_SIZE} bytes" | tee -a "${DIST_DIR}/module_report.txt"
+
+          # Pack unified 3-in-1 AnyKernel3 zip (boot + vendor_boot ramdisk modules + vendor_dlkm.img)
           git clone --depth=1 "${{ env.ANYKERNEL_REPO }}" "${WS}/AnyKernel3"
           cd "${WS}/AnyKernel3"
           rm -rf .git README.md
           cp "${DIST_DIR}/Image" ./Image
-          cat <<EOF > anykernel.sh
-          ### AnyKernel3 Ramdisk Mod Script
-          ## osm0sis @ xda-developers
+          cp "${DIST_DIR}/vendor_dlkm.img" ./vendor_dlkm.img
+          mkdir -p ./ak3_modules/first_stage ./ak3_modules/recovery
+          cp -a "${WS}/out/partitions/first_stage/lib/modules/${KERNEL_VER}/." ./ak3_modules/first_stage/
+          cp -a "${WS}/out/partitions/recovery/lib/modules/${KERNEL_VER}/." ./ak3_modules/recovery/
 
-          ### AnyKernel setup
+          cat <<EOF > anykernel.sh
+          ### AnyKernel3 Unified 3-in-1 Partition Flash Script
+          ## Flashes: boot (Image) + vendor_boot (first_stage/recovery modules) + vendor_dlkm (EROFS image)
+
           properties() { '
           kernel.string=Xiaomi SM8550 Full Kernel (${DEVICE}) - ${KERNEL_VER}
           do.devicecheck=1
           do.modules=0
-          do.systemless=1
+          do.systemless=0
           do.cleanup=1
           do.cleanuponabort=0
           device.name1=${DEVICE}
@@ -450,7 +517,7 @@ jobs:
           supported.vendorpatchlevels=
           '; } # end properties
 
-          ### AnyKernel install
+          ### Phase 1: Flash GKI boot partition (Image only; ramdisk lives in init_boot)
           BLOCK=boot;
           IS_SLOT_DEVICE=1;
           RAMDISK_COMPRESSION=auto;
@@ -458,40 +525,60 @@ jobs:
 
           . tools/ak3-core.sh;
 
+          ui_print " " "Phase 1/3: Flashing boot Image...";
           split_boot;
           flash_boot;
+
+          # Remove Image before vendor_boot phase so flash_boot will not inject kernel into vendor_boot
+          rm -f "\$AKHOME/Image";
+
+          ### Phase 2 & 3: Update vendor_boot ramdisk modules + flash vendor_dlkm.img
+          BLOCK=vendor_boot;
+          IS_SLOT_DEVICE=1;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=auto;
+
+          ui_print " " "Phase 2/3: Updating vendor_boot ramdisk modules...";
+          reset_ak;
+          dump_boot;
+
+          UPDATED_ANY=0;
+          for moddir in "\$RAMDISK/lib/modules" "\$VENDORRD"/*/lib/modules; do
+            [ -d "\$moddir" ] || continue;
+            UPDATED_ANY=1;
+            MOD_CNT=\$(wc -l < "\$moddir/modules.load" 2>/dev/null || echo 0);
+            case "\$moddir" in
+              *recovery*) SRC_DIR="\$AKHOME/ak3_modules/recovery" ;;
+              *)
+                if [ "\$MOD_CNT" -gt 200 ] 2>/dev/null; then
+                  SRC_DIR="\$AKHOME/ak3_modules/recovery";
+                else
+                  SRC_DIR="\$AKHOME/ak3_modules/first_stage";
+                fi;
+                ;;
+            esac;
+            ui_print " " "  -> Updating \$(basename "\$(dirname "\$(dirname "\$moddir")")")/lib/modules (\$(basename "\$SRC_DIR"))";
+            rm -f "\$moddir"/*.ko "\$moddir"/modules.*;
+            cp -f "\$SRC_DIR"/* "\$moddir"/;
+            set_perm_recursive 0 0 755 644 "\$moddir";
+          done;
+          [ "\$UPDATED_ANY" = 1 ] || abort "No lib/modules found inside vendor_boot! Aborting...";
+
+          ui_print " " "Phase 3/3: Repacking vendor_boot & flashing vendor_dlkm.img...";
+          write_boot;
           EOF
           chmod 644 anykernel.sh
 
           KSU_TAG=$([ "${{ steps.meta.outputs.ksu_variant }}" != "none" ] && echo "-${{ steps.meta.outputs.ksu_variant }}" || echo "")
           BASE_TAG="sm8550-${DEVICE}-${{ steps.meta.outputs.lto_mode }}${KSU_TAG}-${{ steps.meta.outputs.build_date }}-${{ steps.meta.outputs.short_sha }}"
-          zip -r9 "${DIST_DIR}/AnyKernel3-boot-${BASE_TAG}.zip" ./* -x "*.zip"
-
-          # 2. Pack vendor_dlkm as KernelSU/Magisk overlay module zip
-          KSU_MOD="${WS}/out/ksu_vendor_dlkm"
-          mkdir -p "${KSU_MOD}/system/vendor_dlkm/lib/modules"
-          cp -a "${WS}/out/partitions/vendor_dlkm/lib/modules/${KERNEL_VER}/." "${KSU_MOD}/system/vendor_dlkm/lib/modules/"
-          cat <<EOF > "${KSU_MOD}/module.prop"
-          id=sm8550_vendor_dlkm_${DEVICE}
-          name=SM8550 Full Modules (${DEVICE})
-          version=${KERNEL_VER}
-          versionCode=$(date +%Y%m%d)
-          author=KuryxCherry
-          description=Compiled vendor_dlkm kernel modules matching ${KERNEL_VER} (modules ${{ steps.meta.outputs.mod_sha }})
-          EOF
-          cd "${KSU_MOD}"
-          zip -r9 "${DIST_DIR}/KSU-vendor_dlkm-${BASE_TAG}.zip" ./*
-
-          # 3. Pack vendor_boot first_stage modules tarball
-          tar -czf "${DIST_DIR}/vendor_boot-modules-${BASE_TAG}.tar.gz" \
-            -C "${WS}/out/partitions/vendor_boot/lib/modules/${KERNEL_VER}" .
+          zip -r9 "${DIST_DIR}/AnyKernel3-full-${BASE_TAG}.zip" ./* -x "*.zip"
 
           ls -lh "${DIST_DIR}"
 
       - name: 上传构建产物（Artifact）
         uses: actions/upload-artifact@v4
         with:
-          name: full-kernel-sm8550-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.lto_mode }}-${{ steps.meta.outputs.short_sha }}
+          name: full-ak3-sm8550-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.lto_mode }}-${{ steps.meta.outputs.short_sha }}
           path: ${{ github.workspace }}/dist/*
           retention-days: 14
 
@@ -508,4 +595,5 @@ jobs:
             - **外置驱动提交**: `${{ steps.meta.outputs.mod_sha }}`
             - **LTO 模式**: `${{ steps.meta.outputs.lto_mode }}`
             - **KernelSU**: `${{ steps.meta.outputs.ksu_variant }}`
+            - **刷入说明**: Recovery 一键刷入 `AnyKernel3-full-*.zip`（同步写入 `boot` + `vendor_boot` 模块 + `vendor_dlkm` EROFS 分区）
           files: ${{ github.workspace }}/dist/*
