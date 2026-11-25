@@ -1021,9 +1021,9 @@ static struct adios_rq_data *get_dl_first_rd(struct adios_data *ad, bool idx) {
 }
 
 // Comparison function for sorting requests by block address
-static int cmp_rq_pos(void *priv, struct list_head *a, struct list_head *b) {
-	struct request *rq_a = list_entry(a, struct request, queuelist);
-	struct request *rq_b = list_entry(b, struct request, queuelist);
+static int cmp_rq_pos(void *priv, const struct list_head *a, const struct list_head *b) {
+	const struct request *rq_a = list_entry(a, const struct request, queuelist);
+	const struct request *rq_b = list_entry(b, const struct request, queuelist);
 	u64 pos_a = blk_rq_pos(rq_a);
 	u64 pos_b = blk_rq_pos(rq_b);
 
