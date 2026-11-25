@@ -10325,7 +10325,8 @@ more_balance:
 		 * frequent, pollute the failure counter causing
 		 * excessive cache_hot migrations and active balances.
 		 */
-		if (idle != CPU_NEWLY_IDLE)
+		if (idle != CPU_NEWLY_IDLE &&
+		    env.migration_type != migrate_misfit)
 			sd->nr_balance_failed++;
 
 		if (need_active_balance(&env)) {
@@ -10409,7 +10410,8 @@ out_one_pinned:
 	 * skyrocketing in a short amount of time. Skip the balance_interval
 	 * increase logic to avoid that.
 	 */
-	if (env.idle == CPU_NEWLY_IDLE)
+	if (env.idle == CPU_NEWLY_IDLE ||
+	    env.migration_type == migrate_misfit)
 		goto out;
 
 	/* tune up the balancing interval */
@@ -11006,10 +11008,10 @@ static void _nohz_idle_balance(struct rq *this_rq, unsigned int flags,
 	smp_mb();
 
 	/*
-	 * Start with the next CPU after this_cpu so we will end with this_cpu and let a
-	 * chance for other idle cpu to pull load.
+	 * Iterate in ascending CPU order so lower-capacity CPUs handle idle
+	 * load balancing before higher-capacity CPUs on asymmetric arm64 SoCs.
 	 */
-	for_each_cpu_wrap(balance_cpu,  nohz.idle_cpus_mask, this_cpu+1) {
+	for_each_cpu(balance_cpu, nohz.idle_cpus_mask) {
 		if (!idle_cpu(balance_cpu))
 			continue;
 
