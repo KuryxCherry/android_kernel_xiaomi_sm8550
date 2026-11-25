@@ -629,6 +629,13 @@ static inline bool elv_support_iosched(struct request_queue *q)
  * For single queue devices, default to using mq-deadline. If we have multiple
  * queues or mq-deadline is not available, default to "none".
  */
+#ifdef CONFIG_DEFAULT_IOSCHED
+static char *default_iosched = CONFIG_DEFAULT_IOSCHED;
+module_param(default_iosched, charp, 0644);
+static bool enforce_default_iosched_on_init = true;
+module_param(enforce_default_iosched_on_init, bool, 0644);
+#endif
+
 static struct elevator_type *elevator_get_default(struct request_queue *q)
 {
 	if (q->tag_set->flags & BLK_MQ_F_NO_SCHED_BY_DEFAULT)
@@ -639,8 +646,8 @@ static struct elevator_type *elevator_get_default(struct request_queue *q)
 		return NULL;
 
 #ifdef CONFIG_DEFAULT_IOSCHED
-	if (CONFIG_DEFAULT_IOSCHED[0]) {
-		struct elevator_type *e = elevator_get(q, CONFIG_DEFAULT_IOSCHED, false);
+	if (default_iosched && default_iosched[0]) {
+		struct elevator_type *e = elevator_get(q, default_iosched, false);
 		if (e)
 			return e;
 	}
@@ -779,8 +786,6 @@ static int __elevator_change(struct request_queue *q, const char *name)
 }
 
 #ifdef CONFIG_DEFAULT_IOSCHED
-static bool enforce_default_iosched_on_init = true;
-module_param(enforce_default_iosched_on_init, bool, 0644);
 #endif
 
 ssize_t elv_iosched_store(struct request_queue *q, const char *name,
@@ -793,10 +798,10 @@ ssize_t elv_iosched_store(struct request_queue *q, const char *name,
 
 #ifdef CONFIG_DEFAULT_IOSCHED
 	if (enforce_default_iosched_on_init && current->pid == 1 &&
-	    CONFIG_DEFAULT_IOSCHED[0] &&
+	    default_iosched && default_iosched[0] &&
 	    !strncmp(name, "bfq", 3) &&
-	    strcmp(CONFIG_DEFAULT_IOSCHED, "bfq") != 0)
-		name = CONFIG_DEFAULT_IOSCHED;
+	    strcmp(default_iosched, "bfq") != 0)
+		name = default_iosched;
 #endif
 	ret = __elevator_change(q, name);
 	if (!ret)
