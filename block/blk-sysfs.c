@@ -96,6 +96,10 @@ static ssize_t queue_ra_show(struct request_queue *q, char *page)
 	return queue_var_show(ra_kb, page);
 }
 
+/* Cap userspace queue/read_ahead_kb writes to 128 KB by default (0 = unlimited) */
+static unsigned long max_read_ahead_kb __read_mostly = 128;
+module_param(max_read_ahead_kb, ulong, 0644);
+
 static ssize_t
 queue_ra_store(struct request_queue *q, const char *page, size_t count)
 {
@@ -107,6 +111,8 @@ queue_ra_store(struct request_queue *q, const char *page, size_t count)
 	ret = queue_var_store(&ra_kb, page, count);
 	if (ret < 0)
 		return ret;
+	if (max_read_ahead_kb && ra_kb > max_read_ahead_kb)
+		ra_kb = max_read_ahead_kb;
 	q->disk->bdi->ra_pages = ra_kb >> (PAGE_SHIFT - 10);
 	return ret;
 }
