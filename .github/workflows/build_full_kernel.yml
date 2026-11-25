@@ -21,6 +21,27 @@ on:
         options:
           - thin
           - none
+      default_iosched:
+        description: "默认开机 I/O 调度器（无损指定，保留全部调度器可热切）"
+        required: false
+        default: "ssg"
+        type: choice
+        options:
+          - ssg
+          - adios
+          - bfq
+          - kyber
+          - mq-deadline
+      default_read_ahead_kb:
+        description: "默认块设备预读大小（KiB，无损指定，开机后可自由调整）"
+        required: false
+        default: "128"
+        type: choice
+        options:
+          - "64"
+          - "128"
+          - "256"
+          - "512"
       ksu_variant:
         description: "Root 方案（可选）"
         required: false
@@ -122,6 +143,8 @@ jobs:
           DEVICE="${{ inputs.device || 'socrates' }}"
           LTO_MODE="${{ inputs.enable_lto || 'thin' }}"
           KSU_VARIANT="${{ inputs.ksu_variant || 'none' }}"
+          DEFAULT_IOSCHED="${{ inputs.default_iosched || 'ssg' }}"
+          DEFAULT_RA_KB="${{ inputs.default_read_ahead_kb || '128' }}"
           SHORT_SHA=$(git -C kernel/xiaomi/sm8550 rev-parse --short HEAD)
           MOD_SHA=$(git -C kernel/xiaomi/sm8550-modules rev-parse --short HEAD)
           BUILD_DATE=$(date +%Y%m%d-%H%M)
@@ -130,6 +153,8 @@ jobs:
             echo "device=${DEVICE}"
             echo "lto_mode=${LTO_MODE}"
             echo "ksu_variant=${KSU_VARIANT}"
+            echo "default_iosched=${DEFAULT_IOSCHED}"
+            echo "default_read_ahead_kb=${DEFAULT_RA_KB}"
             echo "short_sha=${SHORT_SHA}"
             echo "mod_sha=${MOD_SHA}"
             echo "build_date=${BUILD_DATE}"
@@ -214,8 +239,11 @@ jobs:
             ./scripts/config --file "${KERNEL_OUT}/.config" -e KSU -e KPROBES -e OVERLAY_FS
           fi
 
+          ./scripts/config --file "${KERNEL_OUT}/.config" --set-str DEFAULT_IOSCHED "${{ steps.meta.outputs.default_iosched }}"
+          ./scripts/config --file "${KERNEL_OUT}/.config" --set-val DEFAULT_READ_AHEAD_KB "${{ steps.meta.outputs.default_read_ahead_kb }}"
+
           make -j"$(nproc)" "${MAKE_ARGS[@]}" olddefconfig
-          grep -E '^(CONFIG_TCP_CONG_BBR3|CONFIG_DEFAULT_TCP_CONG|CONFIG_NET_SCH_DEFAULT|CONFIG_DEFAULT_FQ|CONFIG_DEFAULT_NET_SCH|CONFIG_LRU_GEN_ENABLED|CONFIG_RCU_LAZY|CONFIG_LTO_CLANG|# CONFIG_RCU_LAZY_DEFAULT_OFF|CONFIG_REKERNEL|CONFIG_ZRAM_DEF_COMP)' "${KERNEL_OUT}/.config" || true
+          grep -E '^(CONFIG_TCP_CONG_BBR3|CONFIG_DEFAULT_TCP_CONG|CONFIG_NET_SCH_DEFAULT|CONFIG_DEFAULT_FQ|CONFIG_DEFAULT_NET_SCH|CONFIG_LRU_GEN_ENABLED|CONFIG_RCU_LAZY|CONFIG_LTO_CLANG|# CONFIG_RCU_LAZY_DEFAULT_OFF|CONFIG_REKERNEL|CONFIG_ZRAM_DEF_COMP|CONFIG_DEFAULT_IOSCHED|CONFIG_DEFAULT_READ_AHEAD_KB)' "${KERNEL_OUT}/.config" || true
 
           make -j"$(nproc)" "${MAKE_ARGS[@]}" Image modules
           make -j"$(nproc)" "${MAKE_ARGS[@]}" INSTALL_MOD_PATH="${MOD_STAGE}" INSTALL_MOD_STRIP=1 modules_install

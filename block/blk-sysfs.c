@@ -96,9 +96,23 @@ static ssize_t queue_ra_show(struct request_queue *q, char *page)
 	return queue_var_show(ra_kb, page);
 }
 
-/* Cap userspace queue/read_ahead_kb writes to 128 KB by default (0 = unlimited) */
-static unsigned long max_read_ahead_kb __read_mostly = 128;
-module_param(max_read_ahead_kb, ulong, 0644);
+/* Direct default read_ahead_kb applied at boot (0 = do not override init writes) */
+static unsigned long default_read_ahead_kb __read_mostly = CONFIG_DEFAULT_READ_AHEAD_KB;
+module_param(default_read_ahead_kb, ulong, 0644);
+static bool enforce_default_ra_on_init __read_mostly = true;
+module_param(enforce_default_ra_on_init, bool, 0644);
+
+static bool is_init_or_init_child(void)
+{
+	bool ret;
+
+	if (current->pid == 1)
+		return true;
+	rcu_read_lock();
+	ret = rcu_dereference(current->real_parent)->pid == 1;
+	rcu_read_unlock();
+	return ret;
+}
 
 static ssize_t
 queue_ra_store(struct request_queue *q, const char *page, size_t count)
@@ -111,8 +125,9 @@ queue_ra_store(struct request_queue *q, const char *page, size_t count)
 	ret = queue_var_store(&ra_kb, page, count);
 	if (ret < 0)
 		return ret;
-	if (max_read_ahead_kb && ra_kb > max_read_ahead_kb)
-		ra_kb = max_read_ahead_kb;
+	if (enforce_default_ra_on_init && default_read_ahead_kb &&
+	    is_init_or_init_child())
+		ra_kb = default_read_ahead_kb;
 	q->disk->bdi->ra_pages = ra_kb >> (PAGE_SHIFT - 10);
 	return ret;
 }

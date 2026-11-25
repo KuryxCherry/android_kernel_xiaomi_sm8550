@@ -819,7 +819,11 @@ struct backing_dev_info *bdi_alloc(int node_id)
 		return NULL;
 	}
 	bdi->capabilities = BDI_CAP_WRITEBACK | BDI_CAP_WRITEBACK_ACCT;
+#ifdef CONFIG_DEFAULT_READ_AHEAD_KB
+	bdi->ra_pages = (CONFIG_DEFAULT_READ_AHEAD_KB * 1024UL) / PAGE_SIZE;
+#else
 	bdi->ra_pages = VM_READAHEAD_PAGES;
+#endif
 	bdi->io_pages = VM_READAHEAD_PAGES;
 	timer_setup(&bdi->laptop_mode_wb_timer, laptop_mode_timer_fn, 0);
 	return bdi;

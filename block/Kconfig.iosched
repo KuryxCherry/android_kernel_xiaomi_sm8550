@@ -64,6 +64,15 @@ config MQ_IOSCHED_SSG_CGROUP
 	help
 	  Control Group for SamSung Generic IO scheduler.
 
+config DEFAULT_IOSCHED
+	string "Default I/O scheduler"
+	default "ssg" if MQ_IOSCHED_SSG=y
+	default "adios" if MQ_IOSCHED_ADIOS=y
+	default "mq-deadline"
+	help
+	  Default blk-mq I/O scheduler attached to storage queues at boot
+	  (e.g. "ssg", "adios", "bfq", "kyber", "mq-deadline").
+
 endmenu
 
 endif

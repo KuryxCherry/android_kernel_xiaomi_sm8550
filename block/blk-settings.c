@@ -392,7 +392,12 @@ void disk_update_readahead(struct gendisk *disk)
 	 * at least twice the optimal I/O size.
 	 */
 	disk->bdi->ra_pages =
+#ifdef CONFIG_DEFAULT_READ_AHEAD_KB
+		max_t(unsigned long, queue_io_opt(q) * 2 / PAGE_SIZE,
+		      (CONFIG_DEFAULT_READ_AHEAD_KB * 1024UL) / PAGE_SIZE);
+#else
 		max(queue_io_opt(q) * 2 / PAGE_SIZE, VM_READAHEAD_PAGES);
+#endif
 	disk->bdi->io_pages = queue_max_sectors(q) >> (PAGE_SHIFT - 9);
 }
 EXPORT_SYMBOL_GPL(disk_update_readahead);
@@ -478,7 +483,12 @@ void blk_queue_io_opt(struct request_queue *q, unsigned int opt)
 	if (!q->disk)
 		return;
 	q->disk->bdi->ra_pages =
+#ifdef CONFIG_DEFAULT_READ_AHEAD_KB
+		max_t(unsigned long, queue_io_opt(q) * 2 / PAGE_SIZE,
+		      (CONFIG_DEFAULT_READ_AHEAD_KB * 1024UL) / PAGE_SIZE);
+#else
 		max(queue_io_opt(q) * 2 / PAGE_SIZE, VM_READAHEAD_PAGES);
+#endif
 }
 EXPORT_SYMBOL(blk_queue_io_opt);
 
