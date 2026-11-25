@@ -19,7 +19,8 @@
 | **网络** | TCP **BBRv3** + 默认 **FQ** qdisc；TTL/HL 修改支持 | `CONFIG_TCP_CONG_BBR3=y`、`CONFIG_DEFAULT_TCP_CONG="bbr3"`、`CONFIG_DEFAULT_NET_SCH="fq"`、`CONFIG_IP_NF_TARGET_TTL=y` |
 | **内存与 ZRAM** | **MGLRU** 默认启用且 `min_ttl_ms=1000`；**LZ4 1.10.0 + ARM64 NEON** 汇编加速；默认 ZRAM 压缩 `lz4`；**ZRAM Writeback** 与内存追踪接口（默认不挂载 `backing_dev`，按需启用） | `CONFIG_LRU_GEN_ENABLED=y`、`mm/vmscan.c`、`lib/lz4/`、`CONFIG_ZRAM_DEF_COMP="lz4"`、`CONFIG_ZRAM_WRITEBACK=y`、`CONFIG_ZRAM_MEMORY_TRACKING=y` |
 | **省电与唤醒** | **RCU_LAZY** 默认启用；**省电工作队列**默认开启；唤醒/定时/PCI PME 省电微调；静默 AVC audit 与 Binder 调试日志 | `# CONFIG_RCU_LAZY_DEFAULT_OFF is not set`、`CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y`、`security/lsm_audit.c`、`drivers/android/binder.c` |
-| **存储与文件系统** | 块设备队列 `read_ahead_kb` 默认上限 **128 KB**（防 `post_boot` 拉高至 512 KB）；F2FS 拥塞停顿缓解、增大最小 fsync 块数、缩短紧急 GC 休眠；NTFS3 读写支持 | `block/blk-sysfs.c`、`fs/f2fs/`、`CONFIG_NTFS3_FS=y` |
+| **存储与文件系统** | 块设备队列 `read_ahead_kb` 默认上限 **128 KB**（防 `post_boot` 拉高至 512 KB）；内置 **ADIOS v3.3.0** 自适应截止时间 I/O 调度器（与默认 `bfq` 共存，可热切换）；F2FS 拥塞停顿缓解、增大最小 fsync 块数、缩短紧急 GC 休眠；NTFS3 读写支持 | `block/blk-sysfs.c`、`block/adios.c`、`CONFIG_MQ_IOSCHED_ADIOS=y`、`fs/f2fs/`、`CONFIG_NTFS3_FS=y` |
+| **调度（Melt 极简路线）** | 保持高通原生 `sched_walt` EAS 主干，仅合入纯主线精准修复：去除 `do_idle()` 多余 `rmb()`、跳过 `rto_next_cpu()` 空推送、`migrate_misfit` 不污染均衡间隔、`_nohz_idle_balance` 优先小核升序扫描 | `kernel/sched/idle.c`、`kernel/sched/rt.c`、`kernel/sched/fair.c` |
 | **进程冻结（墓碑）** | 内建 **Re-Kernel v11.7**（Generic Netlink） | `CONFIG_REKERNEL=y` |
 | **架构与指令微调** | ARM64 `clear_page` 16 字节对齐、`copy_template` 流式预取、`list_lru` 无锁快路径 | `arch/arm64/lib/`、`mm/list_lru.c` |
 
@@ -28,6 +29,23 @@
 ## 二、详细变更日志（按时间倒序）
 
 ### 2026-11-25
+
+- **`4b54adb8d8`** — `block: backport ADIOS v3.3.0 I/O scheduler for Linux 5.15`
+  - **改动文件**：`block/adios.c`、`block/Kconfig.iosched`、`block/Makefile`、`arch/arm64/configs/vendor/socrates_GKI.config`
+  - **内容**：
+    - 借鉴 Melt Kernel 引入独立单文件 **ADIOS v3.3.0**（Adaptive Deadline I/O Scheduler，Masahito Suzuki），零结构体/KMI 改动，并针对 Linux 5.15 适配 `blk_mq_sched_try_insert_merge(..., &free)` + `blk_mq_free_requests(&free)` 与 `-std=gnu11` 局部编译参数；
+    - 以内置方式启用 `CONFIG_MQ_IOSCHED_ADIOS=y`，保持默认 `bfq` 不变，支持随时热切换测试。
+  - **运行时控制 / 回退**：`echo adios > /sys/block/sda/queue/scheduler` 可即时切换为 ADIOS（写 `bfq` 秒切回原厂）；源码回退直接 `git revert 4b54adb8d8`。
+
+- **`16841ec045`** — `sched: backport mainline idle/rt/misfit and asym-idle balance fixes`
+  - **改动文件**：`kernel/sched/idle.c`、`kernel/sched/rt.c`、`kernel/sched/fair.c`
+  - **内容**：
+    - 遵循 Melt Kernel 主干克制原则（完整保留高通原生 `sched_walt` EAS，不引入破坏 ABI 的 BORE/CASS/Uclamp Assist 魔改），仅合入 4 项纯上游精准修复：
+      1. `idle.c`：移除 `do_idle()` 循环内多余 `rmb()` 读内存屏障（高通 Zhongqiu Han / Peter Zijlstra 主线提交）；
+      2. `rt.c`：`rto_next_cpu()` 跳过无任务可推的 CPU，减少无效 RT 核间中断（Sebastian Siewior 主线提交）；
+      3. `fair.c`：`migrate_misfit` 迁移失败时不污染 `nr_balance_failed` 也不翻倍拉长 `balance_interval`（Qais Yousef / Ingo Molnar 主线提交）；
+      4. `fair.c`：`_nohz_idle_balance()` 改按 CPU 编号升序扫描空闲核，优先让小核承接轻负载均衡。
+  - **回退**：直接 `git revert 16841ec045`。
 
 - **`71349d892e`** — `mm/block: set default MGLRU min_ttl_ms to 1000 and cap queue read_ahead_kb to 128`
   - **改动文件**：`mm/vmscan.c`、`block/blk-sysfs.c`
@@ -129,6 +147,7 @@
   cat /sys/kernel/mm/lru_gen/enabled                     # 应为 0x0003
   cat /sys/kernel/mm/lru_gen/min_ttl_ms                  # 应为 1000
   cat /sys/block/sda/queue/read_ahead_kb                 # 应为 128
+  cat /sys/block/sda/queue/scheduler                     # 应包含 adios（默认仍为 [bfq]，可热切）
   cat /sys/module/blk_sysfs/parameters/max_read_ahead_kb # 应为 128（设为 0 解除上限）
   cat /sys/module/workqueue/parameters/power_efficient   # 应为 Y
   cat /sys/block/zram0/comp_algorithm                    # 应包含 [lz4]
