@@ -638,6 +638,13 @@ static struct elevator_type *elevator_get_default(struct request_queue *q)
 			!blk_mq_is_sbitmap_shared(q->tag_set->flags))
 		return NULL;
 
+#if IS_ENABLED(CONFIG_MQ_IOSCHED_SSG)
+	{
+		struct elevator_type *e = elevator_get(q, "ssg", false);
+		if (e)
+			return e;
+	}
+#endif
 	return elevator_get(q, "mq-deadline", false);
 }
 
@@ -771,6 +778,11 @@ static int __elevator_change(struct request_queue *q, const char *name)
 	return elevator_switch(q, e);
 }
 
+#if IS_ENABLED(CONFIG_MQ_IOSCHED_SSG)
+static bool ignore_init_bfq_override = true;
+module_param(ignore_init_bfq_override, bool, 0644);
+#endif
+
 ssize_t elv_iosched_store(struct request_queue *q, const char *name,
 			  size_t count)
 {
@@ -779,6 +791,11 @@ ssize_t elv_iosched_store(struct request_queue *q, const char *name,
 	if (!elv_support_iosched(q))
 		return count;
 
+#if IS_ENABLED(CONFIG_MQ_IOSCHED_SSG)
+	if (ignore_init_bfq_override && current->pid == 1 &&
+	    !strncmp(name, "bfq", 3))
+		name = "ssg";
+#endif
 	ret = __elevator_change(q, name);
 	if (!ret)
 		return count;
