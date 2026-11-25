@@ -122,9 +122,9 @@
 #  if defined (_MSC_VER) && !defined (__clang__)    /* MSVC */
 #    define LZ4_FORCE_INLINE static __forceinline
 #  else
-#    if defined (__cplusplus) || defined (__STDC_VERSION__) && __STDC_VERSION__ >= 199901L   /* C99 */
+#    if defined(__KERNEL__) || defined (__cplusplus) || (defined (__STDC_VERSION__) && __STDC_VERSION__ >= 199901L)   /* C99 */
 #      if defined (__GNUC__) || defined (__clang__)
-#        define LZ4_FORCE_INLINE static inline __attribute__((always_inline))
+#        define LZ4_FORCE_INLINE static inline __attribute__((__always_inline__))
 #      else
 #        define LZ4_FORCE_INLINE static inline
 #      endif
@@ -139,7 +139,7 @@
 #  if defined(_MSC_VER)
 #    define LZ4_FORCE_NOINLINE static __declspec(noinline)
 #  elif defined(__GNUC__) || defined(__clang__)
-#    define LZ4_FORCE_NOINLINE static __attribute__((noinline))
+#    define LZ4_FORCE_NOINLINE static __attribute__((__noinline__))
 #  else
 #    define LZ4_FORCE_NOINLINE static
 #  endif
@@ -304,7 +304,7 @@ static int LZ4_isAligned(const void* ptr, size_t alignment)
 /*-************************************
 *  Types
 **************************************/
-#if defined(__cplusplus) || (defined (__STDC_VERSION__) && (__STDC_VERSION__ >= 199901L) /* C99 */)
+#if defined(__KERNEL__) || defined(__cplusplus) || (defined (__STDC_VERSION__) && (__STDC_VERSION__ >= 199901L) /* C99 */)
   typedef unsigned char BYTE; /*uint8_t not necessarily blessed to alias arbitrary type*/
   typedef uint16_t      U16;
   typedef uint32_t      U32;

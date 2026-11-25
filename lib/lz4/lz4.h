@@ -728,7 +728,7 @@ int LZ4_compress_destSize_extState(void* state, const char* src, char* dst, int*
 #define LZ4_HASHTABLESIZE (1 << LZ4_MEMORY_USAGE)
 #define LZ4_HASH_SIZE_U32 (1 << LZ4_HASHLOG)       /* required as macro for static allocation */
 
-#if defined(__cplusplus) || (defined (__STDC_VERSION__) && (__STDC_VERSION__ >= 199901L) /* C99 */)
+#if defined(__KERNEL__) || defined(__cplusplus) || (defined (__STDC_VERSION__) && (__STDC_VERSION__ >= 199901L) /* C99 */)
   typedef int8_t         LZ4_i8;
   typedef unsigned char  LZ4_byte;
   typedef uint16_t       LZ4_u16;
