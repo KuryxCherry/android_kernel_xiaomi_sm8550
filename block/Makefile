@@ -26,6 +26,9 @@ bfq-y				:= bfq-iosched.o bfq-wf2q.o bfq-cgroup.o
 obj-$(CONFIG_IOSCHED_BFQ)	+= bfq.o
 obj-$(CONFIG_MQ_IOSCHED_ADIOS)	+= adios.o
 CFLAGS_adios.o := -std=gnu11 -Wno-gcc-compat -Wno-declaration-after-statement
+ssg-y				:= ssg-iosched.o
+ssg-$(CONFIG_MQ_IOSCHED_SSG_CGROUP)	+= ssg-cgroup.o
+obj-$(CONFIG_MQ_IOSCHED_SSG)	+= ssg.o
 
 obj-$(CONFIG_BLK_DEV_INTEGRITY) += bio-integrity.o blk-integrity.o
 obj-$(CONFIG_BLK_DEV_INTEGRITY_T10)	+= t10-pi.o
