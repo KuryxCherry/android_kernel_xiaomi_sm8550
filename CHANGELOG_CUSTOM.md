@@ -17,9 +17,9 @@
 | 分类 | 已启用定制项 | 核心入口 / 配置 |
 | :--- | :--- | :--- |
 | **网络** | TCP **BBRv3** + 默认 **FQ** qdisc；TTL/HL 修改支持 | `CONFIG_TCP_CONG_BBR3=y`、`CONFIG_DEFAULT_TCP_CONG="bbr3"`、`CONFIG_DEFAULT_NET_SCH="fq"`、`CONFIG_IP_NF_TARGET_TTL=y` |
-| **内存与 ZRAM** | **MGLRU** 默认启用；**LZ4 1.10.0 + ARM64 NEON** 汇编加速；默认 ZRAM 压缩 `lz4`；**ZRAM Writeback** 与内存追踪接口（默认不挂载 `backing_dev`，按需启用） | `CONFIG_LRU_GEN_ENABLED=y`、`lib/lz4/`、`CONFIG_ZRAM_DEF_COMP="lz4"`、`CONFIG_ZRAM_WRITEBACK=y`、`CONFIG_ZRAM_MEMORY_TRACKING=y` |
+| **内存与 ZRAM** | **MGLRU** 默认启用且 `min_ttl_ms=1000`；**LZ4 1.10.0 + ARM64 NEON** 汇编加速；默认 ZRAM 压缩 `lz4`；**ZRAM Writeback** 与内存追踪接口（默认不挂载 `backing_dev`，按需启用） | `CONFIG_LRU_GEN_ENABLED=y`、`mm/vmscan.c`、`lib/lz4/`、`CONFIG_ZRAM_DEF_COMP="lz4"`、`CONFIG_ZRAM_WRITEBACK=y`、`CONFIG_ZRAM_MEMORY_TRACKING=y` |
 | **省电与唤醒** | **RCU_LAZY** 默认启用；**省电工作队列**默认开启；唤醒/定时/PCI PME 省电微调；静默 AVC audit 与 Binder 调试日志 | `# CONFIG_RCU_LAZY_DEFAULT_OFF is not set`、`CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y`、`security/lsm_audit.c`、`drivers/android/binder.c` |
-| **存储与文件系统** | F2FS 拥塞停顿缓解、增大最小 fsync 块数、缩短紧急 GC 休眠；NTFS3 读写支持 | `fs/f2fs/`、`CONFIG_NTFS3_FS=y` |
+| **存储与文件系统** | 块设备队列 `read_ahead_kb` 默认上限 **128 KB**（防 `post_boot` 拉高至 512 KB）；F2FS 拥塞停顿缓解、增大最小 fsync 块数、缩短紧急 GC 休眠；NTFS3 读写支持 | `block/blk-sysfs.c`、`fs/f2fs/`、`CONFIG_NTFS3_FS=y` |
 | **进程冻结（墓碑）** | 内建 **Re-Kernel v11.7**（Generic Netlink） | `CONFIG_REKERNEL=y` |
 | **架构与指令微调** | ARM64 `clear_page` 16 字节对齐、`copy_template` 流式预取、`list_lru` 无锁快路径 | `arch/arm64/lib/`、`mm/list_lru.c` |
 
@@ -28,6 +28,16 @@
 ## 二、详细变更日志（按时间倒序）
 
 ### 2026-11-25
+
+- **`71349d892e`** — `mm/block: set default MGLRU min_ttl_ms to 1000 and cap queue read_ahead_kb to 128`
+  - **改动文件**：`mm/vmscan.c`、`block/blk-sysfs.c`
+  - **内容**：
+    - `mm/vmscan.c`：将 MGLRU 工作集保护时间 `lru_gen_min_ttl` 默认初始化为 `HZ`（`1000 ms`，Google 官方推荐防内存抖动默认值），避免瞬时高压下的页缓存 thrashing；
+    - `block/blk-sysfs.c`：在 `queue_ra_store()` 新增可热调模块参数 `max_read_ahead_kb`（默认 `128`，`0` 表示不限制），防止高通 `init.kernel.post_boot.sh` 开机后将 UFS/dm 设备 `read_ahead_kb` 覆盖拉高到 `512 KB`，减少 UFS 4.0 随机小读的预读放大与 Page Cache 浪费。
+  - **运行时控制 / 回退**：
+    - `echo 0 > /sys/kernel/mm/lru_gen/min_ttl_ms` 可即时关闭 MGLRU 最小保护时间；
+    - `echo 0 > /sys/module/blk_sysfs/parameters/max_read_ahead_kb` 可即时解除预读上限；
+    - 源码回退直接 `git revert 71349d892e`。
 
 - **`b6ae314955`** — `arm64: configs: socrates: enable WQ_POWER_EFFICIENT_DEFAULT and ZRAM writeback`
   - **改动文件**：`arch/arm64/configs/vendor/socrates_GKI.config`
@@ -91,7 +101,7 @@
 
 - **`01ab2815e3`** — `lib/lz4: upgrade to LZ4 1.10.0 with ARM64 NEON acceleration`
   - **改动文件**：`lib/lz4/`、`include/linux/lz4.h` 等
-  - **内容**：升级内核 LZ4 压缩库至 `1.10.0` 并合入 ARM64 NEON 汇编加速（保留原有 KMI 导出符号）。
+  - **内容**：从 `N1-k0-la1/AnyBaseKernel` 合并升级内核 LZ4 压缩库至 `1.10.0` 并合入 ARM64 NEON 汇编加速（保留原有 KMI 导出符号）。
 
 - **`5ccf5ad45e` / `73d35f405f` / `54c1ff8226` / `6185ce2721`** — TCP BBRv3 与 F2FS 基础优化
   - **改动文件**：`net/ipv4/`、`fs/f2fs/`、`arch/arm64/configs/vendor/socrates_GKI.config`
@@ -117,6 +127,9 @@
   cat /proc/sys/net/ipv4/tcp_congestion_control          # 应为 bbr3
   cat /proc/sys/net/core/default_qdisc                   # 应为 fq
   cat /sys/kernel/mm/lru_gen/enabled                     # 应为 0x0003
+  cat /sys/kernel/mm/lru_gen/min_ttl_ms                  # 应为 1000
+  cat /sys/block/sda/queue/read_ahead_kb                 # 应为 128
+  cat /sys/module/blk_sysfs/parameters/max_read_ahead_kb # 应为 128（设为 0 解除上限）
   cat /sys/module/workqueue/parameters/power_efficient   # 应为 Y
   cat /sys/block/zram0/comp_algorithm                    # 应包含 [lz4]
   ls /sys/block/zram0/backing_dev                        # 应存在（ZRAM Writeback 接口）
