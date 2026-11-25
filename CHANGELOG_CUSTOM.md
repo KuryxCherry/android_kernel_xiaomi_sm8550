@@ -1,0 +1,123 @@
+# Custom Kernel Changelog (`android_kernel_xiaomi_sm8550`)
+
+> **文档说明**
+> - 本文件专门用于记录本仓库（`lineage-24.0` 分支）相对 LineageOS 上游的全部自定义内核优化、驱动修复、配置改动与 CI 构建架构变更，便于日后排错、对比和回退。
+> - **对编译零影响**：纯 Markdown 文档，不参与 Kbuild 编译，不影响内核镜像、`ccache` 命中率与后续上游合并（`sync_upstream.yml`），也不会触发任何自动构建。
+> - **维护约定**：后续每次向本仓库提交优化或配置变更时，请在下方「详细变更日志」顶部按时间倒序同步追加记录（注明日期、Commit SHA、改动文件、目的与回退方法）。
+
+---
+
+## 一、当前生效定制特性速查
+
+- **目标主力机型**：Redmi K60 Pro (`socrates` / SM8550)，兼容 `fuxi` / `nuwa` / `vermeer`
+- **内核基线**：`Linux 5.15.225`（LineageOS 24.0 + `android13-5.15-lts`）
+- **工具链与安全特性**：AOSP Clang 22.0.2 (`r596125`) + `ThinLTO` + 完整保留 `CONFIG_CFI_CLANG` / `CONFIG_DEBUG_INFO_BTF`（无缝兼容 YukiSU / KernelSU LKM）
+- **打包方式**：三合一 AnyKernel3（同步刷入 `vendor_dlkm` EROFS + `boot` Image + `vendor_boot` ramdisk 模块，**不触碰 `init_boot`**，刷内核不掉 LKM Root）
+
+| 分类 | 已启用定制项 | 核心入口 / 配置 |
+| :--- | :--- | :--- |
+| **网络** | TCP **BBRv3** + 默认 **FQ** qdisc；TTL/HL 修改支持 | `CONFIG_TCP_CONG_BBR3=y`、`CONFIG_DEFAULT_TCP_CONG="bbr3"`、`CONFIG_DEFAULT_NET_SCH="fq"`、`CONFIG_IP_NF_TARGET_TTL=y` |
+| **内存与 ZRAM** | **MGLRU** 默认启用；**LZ4 1.10.0 + ARM64 NEON** 汇编加速；默认 ZRAM 压缩 `lz4`；**ZRAM Writeback** 与内存追踪接口（默认不挂载 `backing_dev`，按需启用） | `CONFIG_LRU_GEN_ENABLED=y`、`lib/lz4/`、`CONFIG_ZRAM_DEF_COMP="lz4"`、`CONFIG_ZRAM_WRITEBACK=y`、`CONFIG_ZRAM_MEMORY_TRACKING=y` |
+| **省电与唤醒** | **RCU_LAZY** 默认启用；**省电工作队列**默认开启；唤醒/定时/PCI PME 省电微调；静默 AVC audit 与 Binder 调试日志 | `# CONFIG_RCU_LAZY_DEFAULT_OFF is not set`、`CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y`、`security/lsm_audit.c`、`drivers/android/binder.c` |
+| **存储与文件系统** | F2FS 拥塞停顿缓解、增大最小 fsync 块数、缩短紧急 GC 休眠；NTFS3 读写支持 | `fs/f2fs/`、`CONFIG_NTFS3_FS=y` |
+| **进程冻结（墓碑）** | 内建 **Re-Kernel v11.7**（Generic Netlink） | `CONFIG_REKERNEL=y` |
+| **架构与指令微调** | ARM64 `clear_page` 16 字节对齐、`copy_template` 流式预取、`list_lru` 无锁快路径 | `arch/arm64/lib/`、`mm/list_lru.c` |
+
+---
+
+## 二、详细变更日志（按时间倒序）
+
+### 2026-11-25
+
+- **`b6ae314955`** — `arm64: configs: socrates: enable WQ_POWER_EFFICIENT_DEFAULT and ZRAM writeback`
+  - **改动文件**：`arch/arm64/configs/vendor/socrates_GKI.config`
+  - **内容**：
+    - 开启 `CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y`（让内核工作队列优先派发到活跃 CPU 核，减少唤醒休眠核）；
+    - 开启 `CONFIG_ZRAM_WRITEBACK=y` 与 `CONFIG_ZRAM_MEMORY_TRACKING=y`（预留 ZRAM 回写与块追踪能力，不配置 `backing_dev` 时零额外写入与功耗）。
+  - **运行时控制 / 回退**：`echo N > /sys/module/workqueue/parameters/power_efficient` 可即时关闭省电工作队列；回退直接 `git revert b6ae314955`。
+
+- **`898d43cf65` / `57a323239e`** — `ci: fix ccache path, deduplicate dist artifacts, and optimize runner setup`
+  - **改动文件**：`.github/workflows/build_full_kernel.yml`、`.github/workflows/build_kernel.yml`
+  - **内容**：
+    - 修复 Ubuntu 24.04 (`ccache 4.9`) 默认缓存路径为 `~/.cache/ccache` 与此前缓存 `~/.ccache` 不一致导致缓存失效的问题；开启 `CCACHE_COMPRESS=1` (level 6)、`CCACHE_SLOPPINESS=time_macros,file_macro`、`CCACHE_NOHASHDIR=1`，缓存 key 补齐 `lto_mode`；
+    - 消除 `dist/` 产物套娃：默认仅上传 `AnyKernel3-full-*.zip` + `defconfig_used` + `module_report.txt` + `SHA256SUMS.txt`（体积由 ~91 MB 降至 ~50 MB），新增 `export_raw_images` 可选开关；`upload-artifact` 设 `compression-level: 0`；
+    - Runner 磁盘改为可用空间 `< 35 GB` 时按需清理（平时 0 秒跳过，省 ~90 秒）；
+    - 消除打包期 `depmod` 警告，并在 `$GITHUB_STEP_SUMMARY` 自动生成构建汇总表。
+
+- **`0a4a5ba1aa`** — `ci: fix AnyKernel3 vendor_dlkm flashing for Xiaomi SM8550 super layout`
+  - **改动文件**：`.github/workflows/build_full_kernel.yml`
+  - **内容**：修复 SM8550 动态分区 `super` 下 `vendor_dlkm` 刷入逻辑，当新镜像小于等于现有分区大小时采用原位 `dd` 写入 + SHA256 逐字节校验，避免 `lptools` 无谓 resize/unmap 引发报错。
+
+- **`f855a05e6c`** — `arm64: configs: socrates: set LZ4 as default ZRAM compression algorithm`
+  - **改动文件**：`arch/arm64/configs/vendor/socrates_GKI.config`
+  - **内容**：将默认 ZRAM 压缩算法设为 `lz4`（配合已合入的 LZ4 1.10.0 + ARM64 NEON 加速，降低日常换页 CPU 消耗）。
+
+### 2026-11-24
+
+- **`fe4c103e68`** — `drivers: rekernel: integrate built-in Re-Kernel v11.7`
+  - **改动文件**：`drivers/rekernel/`、`arch/arm64/configs/vendor/socrates_GKI.config` 等
+  - **内容**：源码内建 Re-Kernel v11.7（`CONFIG_REKERNEL=y`），用于配合 Freezer 等墓碑模块实现内核级网络/Binder 冻结解冻通信。
+
+- **`c9ef802c43`** — `ci: disable automatic push trigger on legacy Image-only build workflow`
+  - **改动文件**：`.github/workflows/build_kernel.yml`
+  - **内容**：关闭旧版单刷 `Image` 工作流的自动 push 触发，改为纯手动 `workflow_dispatch`。
+
+- **`9f4c1cb614`** — `net: usb: ax88179_178a: restore vendor ASIX driver compatible with ax_main`
+  - **改动文件**：`drivers/net/usb/ax88179_178a.c`
+  - **内容**：修复合并上游 `5.15-lts` 后 `ax88179_178a` 与高通/厂商 `ax_main` 驱动符号不兼容问题。
+
+- **`a9f9040f4f`** — `Merge remote-tracking branch 'upstream/android13-5.15-lts' into lineage-24.0`
+  - **内容**：合并 Google Android Common Kernel `android13-5.15-lts` 上游安全与稳定性补丁至 `5.15.225`。
+
+- **`15bd99870d` / `135e36be94` / `4242ee0558` / `4eb300f9bf`** — 三合一完整内核构建与上游同步工作流
+  - **改动文件**：`.github/workflows/build_full_kernel.yml`、`.github/workflows/sync_upstream.yml`
+  - **内容**：建立完整内核 + 24 套高通/NXP 外置模块编译、EROFS `vendor_dlkm.img` 生成、三合一 AnyKernel3 打包与上游安全合并流水线。
+
+- **`d3d7d6a5eb`** — `arm64: socrates: enable RCU_LAZY by default and apply mm/f2fs micro-optimizations`
+  - **改动文件**：`arch/arm64/configs/vendor/socrates_GKI.config`、`mm/list_lru.c`、`fs/f2fs/gc.h`
+  - **内容**：默认开启 `RCU_LAZY`（禁用 `RCU_LAZY_DEFAULT_OFF`）；`list_lru_count_one()` 快路径跳过多余 RCU 读锁；F2FS 紧急 GC 休眠由 500ms 缩至 50ms。
+
+- **`49e2ddf0d9`** — `kernel: silence AVC audit and binder debug logs by default (Melt style)`
+  - **改动文件**：`security/lsm_audit.c`、`drivers/android/binder.c`
+  - **内容**：默认静默 SELinux AVC audit 刷屏日志（保留 `disable_audit_log` 运行时模块参数可随时恢复）及 Binder debug 日志。
+
+- **`4678a3a783`** — `kernel: backport safe ARM64 micro-opts and power/wakeup cleanups`
+  - **改动文件**：`arch/arm64/lib/clear_page.S`、`arch/arm64/lib/copy_template.S`、`drivers/base/power/wakeup.c`、`kernel/time/alarmtimer.c`、`drivers/pci/pci.c`、`kernel/irq/cpuhotplug.c`
+  - **内容**：ARM64 `clear_page` 16B 对齐、`copy_template` 流式预取；消除冗余 `s2idle_wake()` 调用；最小化 `alarmtimer` 唤醒超时；PCI PME 轮询间隔由 1s 放宽至 4s；降级 IRQ affinity 日志级别。
+
+- **`47fa49c155` / `f639f9a721`** — `arm64: configs: socrates: set default FQ qdisc for BBRv3 and clean up config`
+  - **改动文件**：`arch/arm64/configs/vendor/socrates_GKI.config`、`.github/workflows/build_kernel.yml`
+  - **内容**：配合 BBRv3 将默认网络队列调度器设为 `fq`；修正 GKI AnyKernel3 打包与机型校验。
+
+- **`01ab2815e3`** — `lib/lz4: upgrade to LZ4 1.10.0 with ARM64 NEON acceleration`
+  - **改动文件**：`lib/lz4/`、`include/linux/lz4.h` 等
+  - **内容**：升级内核 LZ4 压缩库至 `1.10.0` 并合入 ARM64 NEON 汇编加速（保留原有 KMI 导出符号）。
+
+- **`5ccf5ad45e` / `73d35f405f` / `54c1ff8226` / `6185ce2721`** — TCP BBRv3 与 F2FS 基础优化
+  - **改动文件**：`net/ipv4/`、`fs/f2fs/`、`arch/arm64/configs/vendor/socrates_GKI.config`
+  - **内容**：移植并默认启用 `TCP BBRv3`；合入 F2FS 缓解拥塞停顿与增大最小 `fsync` 块数补丁。
+
+---
+
+## 三、已评估但主动排除（未合入）的项（防重复踩坑）
+
+1. **更换第三方魔改 Clang 工具链**：放弃。当前 ROM（LineageOS 24.0）与 `sm8550-modules` 及 YukiSU LKM（依赖 `vmlinux.btf` 与 `clang-cfi/.cfi_jt`）均针对 AOSP Clang 22.0.2 (`r596125`) 验证，换工具链易导致 CFI/BTF 不兼容不开机。
+2. **源码内置 KernelSU/YukiSU**：放弃。保持主内核纯净，使用 `init_boot` LKM 方案实现内核与 Root 解耦，换内核不掉 Root 且便于上游 LTS 合并。
+3. **高侵入内存回收魔改（如 `kshrink_slabd` / `kshrink_lruvecd` / `mi_rmap`）与 HyperOS 专属模块（`mi_sw_sync` / `unionpower` / `sew_audit`）**：放弃。侵入 `mm/` 核心代码极易引起上游合并冲突与记账/竞态问题，且 LineageOS 24.0 环境下原厂 MGLRU 已足够稳定。
+4. **实验性调度大改（`launch_boost` / `sew_yield_penalty` / 强切 RT 的 Binder 调度 / 第三方覆盖式 sysfs 调度脚本）**：放弃。12 GB RAM + 骁龙 8 Gen 2 下原生 `vendor.power-hal-aidl` + 高通 `sched_walt` 已具备良好表现（原厂已默认 `core_ctl=0`、`page-cluster=0`、`irq_affinity=07`、`bfq`）。
+
+---
+
+## 四、排错与快速回退速查
+
+- **按单项精确回退**：在 Git 仓库中直接执行 `git revert <Commit SHA>` 即可干净撤销对应特性。
+- **常见运行时验证命令（手机 Root 终端）**：
+  ```sh
+  uname -a                                               # 核对内核版本与提交号
+  cat /proc/sys/net/ipv4/tcp_congestion_control          # 应为 bbr3
+  cat /proc/sys/net/core/default_qdisc                   # 应为 fq
+  cat /sys/kernel/mm/lru_gen/enabled                     # 应为 0x0003
+  cat /sys/module/workqueue/parameters/power_efficient   # 应为 Y
+  cat /sys/block/zram0/comp_algorithm                    # 应包含 [lz4]
+  ls /sys/block/zram0/backing_dev                        # 应存在（ZRAM Writeback 接口）
+  ```
