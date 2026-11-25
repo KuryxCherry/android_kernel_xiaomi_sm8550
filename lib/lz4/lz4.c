@@ -2252,6 +2252,12 @@ LZ4_decompress_generic(
             DEBUGLOG(6, "move to safe decode loop");
             goto safe_decode;
         }
+        /* In-place decompression (e.g. EROFS): src lies inside [dst, oend),
+         * where wide fast-loop copies (32/64B) can overwrite unread input bytes. */
+        if ((uptrval)((uptrval)ip - (uptrval)op) < (uptrval)(oend - op)) {
+            DEBUGLOG(6, "in-place decompression : move to safe decode loop");
+            goto safe_decode;
+        }
         /* Ring buffer restarting at its beginning : the oldest referenced history (max distance behind op)
          * lies in the external dictionary, ahead of op, always at the same distance.
          * Rings sized with the former LZ4_DECODER_RING_BUFFER_SIZE() (margin 14, up to v1.10.0)
