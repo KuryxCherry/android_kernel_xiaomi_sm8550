@@ -19,7 +19,7 @@
 | **网络** | TCP **BBRv3** + 默认 **FQ** qdisc；TTL/HL 修改支持 | `CONFIG_TCP_CONG_BBR3=y`、`CONFIG_DEFAULT_TCP_CONG="bbr3"`、`CONFIG_DEFAULT_NET_SCH="fq"`、`CONFIG_IP_NF_TARGET_TTL=y` |
 | **内存与 ZRAM** | **MGLRU** 默认启用且 `min_ttl_ms=1000`；纯上游 **LZ4 v1.11.1**（已移除树外 `lz4armv8` NEON 汇编，避免 4KB ZRAM 解压的 FPU 切换/关抢占开销）；默认 ZRAM 压缩 `lz4`；**ZRAM Writeback** 与内存追踪接口（默认不挂载 `backing_dev`，按需启用） | `CONFIG_LRU_GEN_ENABLED=y`、`mm/vmscan.c`、`lib/lz4/`、`CONFIG_ZRAM_DEF_COMP="lz4"`、`CONFIG_ZRAM_WRITEBACK=y`、`CONFIG_ZRAM_MEMORY_TRACKING=y` |
 | **省电与唤醒** | **RCU_LAZY** 默认启用；**省电工作队列**默认开启；唤醒/定时/PCI PME 省电微调；静默 AVC audit 与 Binder 调试日志 | `# CONFIG_RCU_LAZY_DEFAULT_OFF is not set`、`CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y`、`security/lsm_audit.c`、`drivers/android/binder.c` |
-| **存储与文件系统** | 块设备队列 `read_ahead_kb` 默认上限 **128 KB**（防 `post_boot` 拉高至 512 KB）；内置 **Samsung SSG**（含 cgroup 前后台浅队列限流适配）与 **ADIOS v3.3.0** I/O 调度器（与默认 `bfq` 共存，可热切换）；F2FS 拥塞停顿缓解、增大最小 fsync 块数、缩短紧急 GC 休眠；NTFS3 读写支持 | `block/blk-sysfs.c`、`block/ssg-*.{c,h}`、`CONFIG_MQ_IOSCHED_SSG(_CGROUP)=y`、`block/adios.c`、`CONFIG_MQ_IOSCHED_ADIOS=y`、`fs/f2fs/`、`CONFIG_NTFS3_FS=y` |
+| **存储与文件系统** | 块设备队列 `read_ahead_kb` 默认上限 **128 KB**（防 `post_boot` 拉高至 512 KB）；内置 **Samsung SSG**（含 cgroup 前后台浅队列限流适配）与 **ADIOS v3.3.0** I/O 调度器（默认开机启用 **SSG**，与 `bfq` / `adios` 共存且随时可热切换）；F2FS 拥塞停顿缓解、增大最小 fsync 块数、缩短紧急 GC 休眠；NTFS3 读写支持 | `block/blk-sysfs.c`、`block/ssg-*.{c,h}`、`CONFIG_MQ_IOSCHED_SSG(_CGROUP)=y`、`block/adios.c`、`CONFIG_MQ_IOSCHED_ADIOS=y`、`fs/f2fs/`、`CONFIG_NTFS3_FS=y` |
 | **调度（Melt 极简路线）** | 保持高通原生 `sched_walt` EAS 主干，仅合入纯主线精准修复：去除 `do_idle()` 多余 `rmb()`、跳过 `rto_next_cpu()` 空推送、`migrate_misfit` 不污染均衡间隔、`_nohz_idle_balance` 优先小核升序扫描 | `kernel/sched/idle.c`、`kernel/sched/rt.c`、`kernel/sched/fair.c` |
 | **进程冻结（墓碑）** | 内建 **Re-Kernel v11.7**（Generic Netlink） | `CONFIG_REKERNEL=y` |
 | **架构与指令微调** | ARM64 `clear_page` 16 字节对齐、`copy_template` 流式预取、`list_lru` 无锁快路径 | `arch/arm64/lib/`、`mm/list_lru.c` |
@@ -29,6 +29,13 @@
 ## 二、详细变更日志（按时间倒序）
 
 ### 2026-11-25
+
+- **`4e659c6a61`** — `block: elevator: default to Samsung SSG and keep it across init bfq override`
+  - **改动文件**：`block/elevator.c`
+  - **内容**：
+    - 在 `elevator_get_default()` 中当启用 `CONFIG_MQ_IOSCHED_SSG` 时优先默认选用 `ssg`；
+    - 在 `elv_iosched_store()` 新增可热调参数 `ignore_init_bfq_override`（默认 `Y`）：仅对 PID 1（Android `init` 执行 `/vendor/etc/init/hw/init.qti.kernel.rc`）写入 `bfq` 的动作自动重定向为 `ssg`，无需任何用户态模块即可让 `sda`~`sdf` 开机默认运行在 `[ssg]`；开机后任意非 PID 1 进程随时可正常热切 `bfq` / `adios` / `kyber`。
+  - **运行时控制 / 回退**：`echo N > /sys/module/elevator/parameters/ignore_init_bfq_override` 可关闭拦截；源码回退直接 `git revert 4e659c6a61`。
 
 - **`1cdd5b43f8`** — `lib/lz4: upgrade to pure upstream LZ4 v1.11.1 and drop lz4armv8 NEON`
   - **改动文件**：`lib/lz4/{Makefile,lz4.h,lz4.c,lz4hc.h,lz4hc.c}`、删除 `lib/lz4/lz4armv8/*`、`crypto/lz4.c`、`crypto/lz4hc.c`、`fs/f2fs/compress.c`、`fs/incfs/data_mgmt.c`
