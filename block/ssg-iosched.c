@@ -97,6 +97,7 @@ struct ssg_data {
 	 * I/O context information for each request
 	 */
 	struct ssg_request_info *rq_info;
+	unsigned int rq_info_nr;
 
 	spinlock_t lock;
 	spinlock_t zone_lock;
@@ -150,7 +151,7 @@ static inline struct ssg_request_info *ssg_rq_info(struct ssg_data *ssg,
 	if (unlikely(rq->internal_tag < 0))
 		return NULL;
 
-	if (unlikely(rq->internal_tag >= rq->q->nr_requests))
+	if (unlikely((unsigned int)rq->internal_tag >= ssg->rq_info_nr))
 		return NULL;
 
 	return &ssg->rq_info[rq->internal_tag];
@@ -445,6 +446,9 @@ static void ssg_set_shallow_depth(struct ssg_data *ssg, struct blk_mq_tags *tags
 	unsigned int depth = tags->bitmap_tags->sb.depth;
 	unsigned int map_nr = tags->bitmap_tags->sb.map_nr;
 
+	if (unlikely(!map_nr))
+		return;
+
 	ssg->max_async_write_rqs = depth * max_async_write_ratio / 100U;
 	ssg->max_async_write_rqs =
 		min_t(int, ssg->max_async_write_rqs, MAX_ASYNC_WRITE_RQS);
@@ -468,8 +472,12 @@ static void ssg_depth_updated(struct blk_mq_hw_ctx *hctx)
 	kfree(ssg->rq_info);
 	ssg->rq_info = kmalloc_array(depth, sizeof(struct ssg_request_info),
 				     GFP_KERNEL | __GFP_ZERO);
-	if (ZERO_OR_NULL_PTR(ssg->rq_info))
+	if (ZERO_OR_NULL_PTR(ssg->rq_info)) {
 		ssg->rq_info = NULL;
+		ssg->rq_info_nr = 0;
+	} else {
+		ssg->rq_info_nr = depth;
+	}
 
 	ssg_set_shallow_depth(ssg, tags);
 	sbitmap_queue_min_shallow_depth(tags->bitmap_tags,
@@ -501,9 +509,9 @@ static unsigned int ssg_tgroup_shallow_depth(struct blk_mq_alloc_data *data)
 {
 	struct ssg_data *ssg = data->q->elevator->elevator_data;
 	pid_t tgid = task_tgid_nr(current->group_leader);
-	int nr_requests = data->q->nr_requests;
+	unsigned int nr_requests = ssg->rq_info_nr;
 	int tgroup_rqs = 0;
-	int i;
+	unsigned int i;
 
 	if (unlikely(!ssg->rq_info))
 		return 0;
@@ -595,8 +603,12 @@ static int ssg_init_queue(struct request_queue *q, struct elevator_type *e)
 		q->nr_requests * congestion_threshold / 100U;
 	ssg->rq_info = kmalloc_array(q->nr_requests, sizeof(struct ssg_request_info),
 				     GFP_KERNEL | __GFP_ZERO);
-	if (ZERO_OR_NULL_PTR(ssg->rq_info))
+	if (ZERO_OR_NULL_PTR(ssg->rq_info)) {
 		ssg->rq_info = NULL;
+		ssg->rq_info_nr = 0;
+	} else {
+		ssg->rq_info_nr = q->nr_requests;
+	}
 
 	spin_lock_init(&ssg->lock);
 	spin_lock_init(&ssg->zone_lock);
@@ -732,11 +744,7 @@ static void ssg_prepare_request(struct request *rq)
 	rqi = ssg_rq_info(ssg, rq);
 	if (likely(rqi)) {
 		rqi->tgid = task_tgid_nr(current->group_leader);
-
-		rcu_read_lock();
-		rqi->blkg = blkg_lookup(css_to_blkcg(blkcg_css()), rq->q);
-		ssg_blkcg_inc_rq(rqi->blkg);
-		rcu_read_unlock();
+		rqi->blkg = ssg_blkcg_inc_rq(rq->q);
 	}
 
 	if (ssg_op_is_async_write(rq->cmd_flags))

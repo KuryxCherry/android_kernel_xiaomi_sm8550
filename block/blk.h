@@ -374,4 +374,17 @@ static inline void bio_clear_hipri(struct bio *bio)
 
 extern const struct address_space_operations def_blk_aops;
 
+static inline bool blk_is_init_caller(void)
+{
+	bool ret;
+
+	if (is_global_init(current))
+		return true;
+
+	rcu_read_lock();
+	ret = is_global_init(rcu_dereference(current->real_parent));
+	rcu_read_unlock();
+	return ret;
+}
+
 #endif /* BLK_INTERNAL_H */

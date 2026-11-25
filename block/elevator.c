@@ -630,21 +630,20 @@ static inline bool elv_support_iosched(struct request_queue *q)
  * queues or mq-deadline is not available, default to "none".
  */
 #ifdef CONFIG_DEFAULT_IOSCHED
-static char *default_iosched = CONFIG_DEFAULT_IOSCHED;
-module_param(default_iosched, charp, 0644);
+static char default_iosched[ELV_NAME_MAX] = CONFIG_DEFAULT_IOSCHED;
+module_param_string(default_iosched, default_iosched, sizeof(default_iosched), 0644);
 static bool enforce_default_iosched_on_init = true;
 module_param(enforce_default_iosched_on_init, bool, 0644);
 
-static bool is_init_or_init_child(void)
+static bool elv_get_default_name(char *buf, size_t size)
 {
-	bool ret;
+	const char *trimmed;
 
-	if (current->pid == 1)
-		return true;
-	rcu_read_lock();
-	ret = rcu_dereference(current->real_parent)->pid == 1;
-	rcu_read_unlock();
-	return ret;
+	strscpy(buf, default_iosched, size);
+	trimmed = strim(buf);
+	if (trimmed != buf)
+		memmove(buf, trimmed, strlen(trimmed) + 1);
+	return buf[0] != '\0';
 }
 #endif
 
@@ -658,10 +657,14 @@ static struct elevator_type *elevator_get_default(struct request_queue *q)
 		return NULL;
 
 #ifdef CONFIG_DEFAULT_IOSCHED
-	if (default_iosched && default_iosched[0]) {
-		struct elevator_type *e = elevator_get(q, default_iosched, false);
-		if (e)
-			return e;
+	{
+		char name[ELV_NAME_MAX];
+
+		if (elv_get_default_name(name, sizeof(name))) {
+			struct elevator_type *e = elevator_get(q, name, false);
+			if (e)
+				return e;
+		}
 	}
 #endif
 	return elevator_get(q, "mq-deadline", false);
@@ -797,23 +800,23 @@ static int __elevator_change(struct request_queue *q, const char *name)
 	return elevator_switch(q, e);
 }
 
-#ifdef CONFIG_DEFAULT_IOSCHED
-#endif
-
 ssize_t elv_iosched_store(struct request_queue *q, const char *name,
 			  size_t count)
 {
 	int ret;
+#ifdef CONFIG_DEFAULT_IOSCHED
+	char default_name[ELV_NAME_MAX];
+#endif
 
 	if (!elv_support_iosched(q))
 		return count;
 
 #ifdef CONFIG_DEFAULT_IOSCHED
-	if (enforce_default_iosched_on_init && is_init_or_init_child() &&
-	    default_iosched && default_iosched[0] &&
+	if (enforce_default_iosched_on_init && blk_is_init_caller() &&
 	    !strncmp(name, "bfq", 3) &&
-	    strcmp(default_iosched, "bfq") != 0)
-		name = default_iosched;
+	    elv_get_default_name(default_name, sizeof(default_name)) &&
+	    strcmp(default_name, "bfq") != 0)
+		name = default_name;
 #endif
 	ret = __elevator_change(q, name);
 	if (!ret)

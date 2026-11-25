@@ -200,6 +200,13 @@ config BLK_INLINE_ENCRYPTION_FALLBACK
 	  by falling back to the kernel crypto API when inline
 	  encryption hardware is not present.
 
+config DEFAULT_READ_AHEAD_KB
+	int "Default block device read_ahead_kb (KiB)"
+	default 128
+	range 16 2048
+	help
+	  Default read-ahead window (in KiB) for block devices at boot.
+
 menu "Partition Types"
 
 source "block/partitions/Kconfig"
@@ -234,12 +241,5 @@ config BLK_PM
 # do not use in new code
 config BLOCK_HOLDER_DEPRECATED
 	bool
-
-config DEFAULT_READ_AHEAD_KB
-	int "Default block device read_ahead_kb (KiB)"
-	default 128
-	range 16 2048
-	help
-	  Default read-ahead window (in KiB) for block devices at boot.
 
 source "block/Kconfig.iosched"

@@ -75,19 +75,21 @@ static void line_binder_alloc_new_buf_locked(void *data, size_t size, struct bin
 	if (is_async
 		&& (alloc->free_async_space < 3 * (size + sizeof(struct binder_buffer))
 		|| (alloc->free_async_space < WARN_AHEAD_SPACE))) {
+		char binder_kmsg[PACKET_SIZE];
+		int len = 0;
+
 		rcu_read_lock();
 		p = find_task_by_vpid(alloc->pid);
-		rcu_read_unlock();
 		if (p != NULL && line_is_frozen(p)) {
 #ifdef DEBUG
 			pr_info("[Re-Kernel LKM] Binder Free buffer full! from=%d | target=%d\n", task_uid(current).val, task_uid(p).val);
 #endif
-			if (rekernel_netlink_ready()) {
-				char binder_kmsg[PACKET_SIZE];
-				int len = scnprintf(binder_kmsg, sizeof(binder_kmsg), "type=Binder,bindertype=free_buffer_full,oneway=1,from_pid=%d,from=%d,target_pid=%d,target=%d,rpc_name=%s,code=%d;", task_tgid_nr(current), task_uid(current).val, task_tgid_nr(p), task_uid(p).val, "FREE_BUFFER_FULL", -1);
-				sendMessage(binder_kmsg, len);
-			}
+			if (rekernel_netlink_ready())
+				len = scnprintf(binder_kmsg, sizeof(binder_kmsg), "type=Binder,bindertype=free_buffer_full,oneway=1,from_pid=%d,from=%d,target_pid=%d,target=%d,rpc_name=%s,code=%d;", task_tgid_nr(current), task_uid(current).val, task_tgid_nr(p), task_uid(p).val, "FREE_BUFFER_FULL", -1);
 		}
+		rcu_read_unlock();
+		if (len > 0)
+			sendMessage(binder_kmsg, len);
 	}
 }
 

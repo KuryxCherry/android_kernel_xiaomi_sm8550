@@ -24,7 +24,7 @@ extern int ssg_blkcg_activate(struct request_queue *q);
 extern void ssg_blkcg_deactivate(struct request_queue *q);
 extern unsigned int ssg_blkcg_shallow_depth(struct request_queue *q);
 extern void ssg_blkcg_depth_updated(struct blk_mq_hw_ctx *hctx);
-extern void ssg_blkcg_inc_rq(struct blkcg_gq *blkg);
+extern struct blkcg_gq *ssg_blkcg_inc_rq(struct request_queue *q);
 extern void ssg_blkcg_dec_rq(struct blkcg_gq *blkg);
 #else
 static inline int ssg_blkcg_init(void)
@@ -53,8 +53,9 @@ static inline void ssg_blkcg_depth_updated(struct blk_mq_hw_ctx *hctx)
 {
 }
 
-static inline void ssg_blkcg_inc_rq(struct blkcg_gq *blkg)
+static inline struct blkcg_gq *ssg_blkcg_inc_rq(struct request_queue *q)
 {
+	return NULL;
 }
 
 static inline void ssg_blkcg_dec_rq(struct blkcg_gq *blkg)

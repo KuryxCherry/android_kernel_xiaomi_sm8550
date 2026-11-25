@@ -76,6 +76,8 @@ static void ssg_blkcg_set_shallow_depth(struct ssg_blkcg *ssg_blkcg,
 
 	depth = tags->bitmap_tags->sb.depth;
 	map_nr = tags->bitmap_tags->sb.map_nr;
+	if (unlikely(!map_nr))
+		return;
 
 	ssg_blkg->max_available_rqs =
 		depth * ssg_blkcg->max_available_ratio / 100U;
@@ -128,19 +130,17 @@ unsigned int ssg_blkcg_shallow_depth(struct request_queue *q)
 {
 	struct blkcg_gq *blkg;
 	struct ssg_blkg *ssg_blkg;
+	unsigned int shallow_depth = 0;
 
 	rcu_read_lock();
 	blkg = blkg_lookup(css_to_blkcg(blkcg_css()), q);
 	ssg_blkg = BLKG_TO_SSG_BLKG(blkg);
+	if (!IS_ERR_OR_NULL(ssg_blkg) &&
+	    atomic_read(&ssg_blkg->current_rqs) >= ssg_blkg->max_available_rqs)
+		shallow_depth = ssg_blkg->shallow_depth;
 	rcu_read_unlock();
 
-	if (IS_ERR_OR_NULL(ssg_blkg))
-		return 0;
-
-	if (atomic_read(&ssg_blkg->current_rqs) < ssg_blkg->max_available_rqs)
-		return 0;
-
-	return ssg_blkg->shallow_depth;
+	return shallow_depth;
 }
 
 void ssg_blkcg_depth_updated(struct blk_mq_hw_ctx *hctx)
@@ -150,6 +150,9 @@ void ssg_blkcg_depth_updated(struct blk_mq_hw_ctx *hctx)
 	struct blkcg_gq *blkg;
 	struct ssg_blkg *ssg_blkg;
 	struct ssg_blkcg *ssg_blkcg;
+
+	if (!q->root_blkg)
+		return;
 
 	rcu_read_lock();
 	blkg_for_each_descendant_pre(blkg, pos_css, q->root_blkg) {
@@ -167,24 +170,41 @@ void ssg_blkcg_depth_updated(struct blk_mq_hw_ctx *hctx)
 	rcu_read_unlock();
 }
 
-void ssg_blkcg_inc_rq(struct blkcg_gq *blkg)
+struct blkcg_gq *ssg_blkcg_inc_rq(struct request_queue *q)
 {
-	struct ssg_blkg *ssg_blkg = BLKG_TO_SSG_BLKG(blkg);
+	struct blkcg_gq *blkg;
+	struct ssg_blkg *ssg_blkg;
 
-	if (IS_ERR_OR_NULL(ssg_blkg))
-		return;
+	rcu_read_lock();
+	blkg = blkg_lookup(css_to_blkcg(blkcg_css()), q);
+	if (blkg && blkg_tryget(blkg)) {
+		ssg_blkg = BLKG_TO_SSG_BLKG(blkg);
+		if (!IS_ERR_OR_NULL(ssg_blkg)) {
+			atomic_inc(&ssg_blkg->current_rqs);
+		} else {
+			blkg_put(blkg);
+			blkg = NULL;
+		}
+	} else {
+		blkg = NULL;
+	}
+	rcu_read_unlock();
 
-	atomic_inc(&ssg_blkg->current_rqs);
+	return blkg;
 }
 
 void ssg_blkcg_dec_rq(struct blkcg_gq *blkg)
 {
-	struct ssg_blkg *ssg_blkg = BLKG_TO_SSG_BLKG(blkg);
+	struct ssg_blkg *ssg_blkg;
 
-	if (IS_ERR_OR_NULL(ssg_blkg))
+	if (!blkg)
 		return;
 
-	atomic_dec(&ssg_blkg->current_rqs);
+	ssg_blkg = BLKG_TO_SSG_BLKG(blkg);
+	if (!IS_ERR_OR_NULL(ssg_blkg))
+		atomic_dec(&ssg_blkg->current_rqs);
+
+	blkg_put(blkg);
 }
 
 static int ssg_blkcg_show_max_available_ratio(struct seq_file *sf, void *v)
@@ -229,7 +249,7 @@ static int ssg_blkcg_set_max_available_ratio(struct cgroup_subsys_state *css,
 	return 0;
 }
 
-struct cftype ssg_blkg_files[] = {
+static struct cftype ssg_blkg_files[] = {
 	{
 		.name = "ssg.max_available_ratio",
 		.flags = CFTYPE_NOT_ON_ROOT,
