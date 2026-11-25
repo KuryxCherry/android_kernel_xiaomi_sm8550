@@ -634,6 +634,18 @@ static char *default_iosched = CONFIG_DEFAULT_IOSCHED;
 module_param(default_iosched, charp, 0644);
 static bool enforce_default_iosched_on_init = true;
 module_param(enforce_default_iosched_on_init, bool, 0644);
+
+static bool is_init_or_init_child(void)
+{
+	bool ret;
+
+	if (current->pid == 1)
+		return true;
+	rcu_read_lock();
+	ret = rcu_dereference(current->real_parent)->pid == 1;
+	rcu_read_unlock();
+	return ret;
+}
 #endif
 
 static struct elevator_type *elevator_get_default(struct request_queue *q)
@@ -797,7 +809,7 @@ ssize_t elv_iosched_store(struct request_queue *q, const char *name,
 		return count;
 
 #ifdef CONFIG_DEFAULT_IOSCHED
-	if (enforce_default_iosched_on_init && current->pid == 1 &&
+	if (enforce_default_iosched_on_init && is_init_or_init_child() &&
 	    default_iosched && default_iosched[0] &&
 	    !strncmp(name, "bfq", 3) &&
 	    strcmp(default_iosched, "bfq") != 0)
