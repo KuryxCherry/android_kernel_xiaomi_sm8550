@@ -19,7 +19,7 @@
 | **网络** | TCP **BBRv3** + 默认 **FQ** qdisc；TTL/HL 修改支持 | `CONFIG_TCP_CONG_BBR3=y`、`CONFIG_DEFAULT_TCP_CONG="bbr3"`、`CONFIG_DEFAULT_NET_SCH="fq"`、`CONFIG_IP_NF_TARGET_TTL=y` |
 | **内存与 ZRAM** | **MGLRU** 默认启用且 `min_ttl_ms=1000`；纯上游 **LZ4 v1.11.1**（已移除树外 `lz4armv8` NEON 汇编，避免 4KB ZRAM 解压的 FPU 切换/关抢占开销）；默认 ZRAM 压缩 `lz4`；**ZRAM Writeback** 与内存追踪接口（默认不挂载 `backing_dev`，按需启用） | `CONFIG_LRU_GEN_ENABLED=y`、`mm/vmscan.c`、`lib/lz4/`、`CONFIG_ZRAM_DEF_COMP="lz4"`、`CONFIG_ZRAM_WRITEBACK=y`、`CONFIG_ZRAM_MEMORY_TRACKING=y` |
 | **省电与唤醒** | **RCU_LAZY** 默认启用；**省电工作队列**默认开启；唤醒/定时/PCI PME 省电微调；静默 AVC audit 与 Binder 调试日志 | `# CONFIG_RCU_LAZY_DEFAULT_OFF is not set`、`CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y`、`security/lsm_audit.c`、`drivers/android/binder.c` |
-| **存储与文件系统** | 块设备队列 `read_ahead_kb` 默认上限 **128 KB**（防 `post_boot` 拉高至 512 KB）；内置 **Samsung SSG**（含 cgroup 前后台浅队列限流适配）与 **ADIOS v3.3.0** I/O 调度器（默认开机启用 **SSG**，与 `bfq` / `adios` 共存且随时可热切换）；F2FS 拥塞停顿缓解、增大最小 fsync 块数、缩短紧急 GC 休眠；NTFS3 读写支持 | `block/blk-sysfs.c`、`block/ssg-*.{c,h}`、`CONFIG_MQ_IOSCHED_SSG(_CGROUP)=y`、`block/adios.c`、`CONFIG_MQ_IOSCHED_ADIOS=y`、`fs/f2fs/`、`CONFIG_NTFS3_FS=y` |
+| **存储与文件系统** | Kconfig 无损直接指定默认 I/O 调度器（`CONFIG_DEFAULT_IOSCHED=`）与块预读（`CONFIG_DEFAULT_READ_AHEAD_KB=128`，仅规范开机 init/post_boot 写入，开机后完全自由调整）；内置 **Samsung SSG**（含 cgroup 前后台浅队列限流适配）与 **ADIOS v3.3.0** I/O 调度器（默认开机启用 **SSG**，与 `bfq` / `adios` 共存且随时可热切换）；F2FS 拥塞停顿缓解、增大最小 fsync 块数、缩短紧急 GC 休眠；NTFS3 读写支持 | `block/blk-sysfs.c`、`block/ssg-*.{c,h}`、`CONFIG_MQ_IOSCHED_SSG(_CGROUP)=y`、`block/adios.c`、`CONFIG_MQ_IOSCHED_ADIOS=y`、`fs/f2fs/`、`CONFIG_NTFS3_FS=y` |
 | **调度（Melt 极简路线）** | 保持高通原生 `sched_walt` EAS 主干，仅合入纯主线精准修复：去除 `do_idle()` 多余 `rmb()`、跳过 `rto_next_cpu()` 空推送、`migrate_misfit` 不污染均衡间隔、`_nohz_idle_balance` 优先小核升序扫描 | `kernel/sched/idle.c`、`kernel/sched/rt.c`、`kernel/sched/fair.c` |
 | **进程冻结（墓碑）** | 内建 **Re-Kernel v11.7**（Generic Netlink） | `CONFIG_REKERNEL=y` |
 | **架构与指令微调** | ARM64 `clear_page` 16 字节对齐、`copy_template` 流式预取、`list_lru` 无锁快路径 | `arch/arm64/lib/`、`mm/list_lru.c` |
@@ -29,6 +29,14 @@
 ## 二、详细变更日志（按时间倒序）
 
 ### 2026-11-25
+
+- **`e28486f19a`** — `block: add Kconfig direct defaults for I/O scheduler and read_ahead_kb`
+  - **改动文件**：`block/Kconfig.iosched`、`block/Kconfig`、`block/elevator.c`、`block/blk-sysfs.c`、`mm/backing-dev.c`、`block/blk-settings.c`、`arch/arm64/configs/vendor/socrates_GKI.config`、`.github/workflows/build_full_kernel.yml`
+  - **内容**：
+    - 新增 `CONFIG_DEFAULT_IOSCHED`（默认 `"ssg"`），用 Kconfig 通用无损指定默认调度器，替换原硬编码；`enforce_default_iosched_on_init` 仅对 PID 1 开机写 `bfq` 生效，保留全部调度器随时热切；
+    - 新增 `CONFIG_DEFAULT_READ_AHEAD_KB`（默认 `128`），在 `mm/backing-dev.c` 与 `block/blk-settings.c` 原生直接初始化 `ra_pages`，并将 `blk-sysfs.c` 由原先的全局硬上限 `max_read_ahead_kb` 改为仅规范 `init` 及 `init` 直属子服务（如 `kernel-post-boot`）的直接默认值 `default_read_ahead_kb`，开机后用户手动调整任意大小不再受限；
+    - 在 GitHub Actions `build_full_kernel.yml` 暴露 `default_iosched` 与 `default_read_ahead_kb` 下拉菜单，构建时即可无损直选。
+  - **运行时控制 / 回退**：`/sys/module/elevator/parameters/enforce_default_iosched_on_init`、`/sys/module/blk_sysfs/parameters/{default_read_ahead_kb,enforce_default_ra_on_init}`；源码回退 `git revert e28486f19a`。
 
 - **`4e659c6a61`** — `block: elevator: default to Samsung SSG and keep it across init bfq override`
   - **改动文件**：`block/elevator.c`
@@ -172,7 +180,8 @@
   cat /sys/kernel/mm/lru_gen/min_ttl_ms                  # 应为 1000
   cat /sys/block/sda/queue/read_ahead_kb                 # 应为 128
   cat /sys/block/sda/queue/scheduler                     # 应包含 ssg 与 adios（默认仍为 [bfq]，可热切）
-  cat /sys/module/blk_sysfs/parameters/max_read_ahead_kb # 应为 128（设为 0 解除上限）
+  cat /sys/module/blk_sysfs/parameters/default_read_ahead_kb # 应为 128（仅规范 init 开机写入，手动调整不受限）
+  cat /sys/module/elevator/parameters/enforce_default_iosched_on_init # 应为 Y
   cat /sys/module/workqueue/parameters/power_efficient   # 应为 Y
   cat /sys/block/zram0/comp_algorithm                    # 应包含 [lz4]
   ls /sys/block/zram0/backing_dev                        # 应存在（ZRAM Writeback 接口）
