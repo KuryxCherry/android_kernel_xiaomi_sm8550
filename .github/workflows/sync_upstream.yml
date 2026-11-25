@@ -25,6 +25,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   sync:
     name: Sync Upstream (${{ inputs.upstream_source }})
@@ -37,12 +41,16 @@ jobs:
           fetch-depth: 0
 
       - name: 拉取并尝试无损合并上游
+        env:
+          UPSTREAM_SOURCE: ${{ inputs.upstream_source }}
+          PREFER_THEIRS: ${{ inputs.prefer_theirs_paths }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          case "${{ inputs.upstream_source }}" in
+          case "${UPSTREAM_SOURCE}" in
             lineageos)
               UPSTREAM_URL="https://github.com/LineageOS/android_kernel_xiaomi_sm8550.git"
               UPSTREAM_REF="lineage-24.0"
@@ -59,18 +67,24 @@ jobs:
           BEHIND=$(git rev-list --count HEAD..upstream/"${UPSTREAM_REF}")
           echo "Commits available from ${UPSTREAM_URL} (${UPSTREAM_REF}): ${BEHIND}"
           if [ "${BEHIND}" = "0" ]; then
-            echo "Already up to date."
+            {
+              echo "## Upstream Kernel Sync Summary"
+              echo "- **Source**: \`${UPSTREAM_SOURCE}\` (\`${UPSTREAM_REF}\`)"
+              echo "- **Status**: Already up to date (0 commits behind)"
+            } >> "${GITHUB_STEP_SUMMARY}"
             exit 0
           fi
 
+          RESOLVED=()
           if ! git merge --no-edit --no-ff "upstream/${UPSTREAM_REF}"; then
-            PREFER_THEIRS="${{ inputs.prefer_theirs_paths }}"
             if [ -n "${PREFER_THEIRS}" ]; then
-              for P in ${PREFER_THEIRS}; do
+              read -r -a PATH_LIST <<< "${PREFER_THEIRS}"
+              for P in "${PATH_LIST[@]}"; do
                 if git diff --name-only --diff-filter=U | grep -qxF "${P}"; then
                   echo "[RESOLVE] Taking upstream version for whitelisted conflict: ${P}"
                   git checkout --theirs -- "${P}"
                   git add "${P}"
+                  RESOLVED+=("${P}")
                 fi
               done
             fi
@@ -79,6 +93,16 @@ jobs:
             if [ -n "${REMAINING}" ]; then
               echo "=== UNRESOLVED MERGE CONFLICTS DETECTED (aborted safely; local commits untouched) ==="
               echo "${REMAINING}"
+              {
+                echo "## Upstream Kernel Sync Failed (Conflicts)"
+                echo "- **Source**: \`${UPSTREAM_SOURCE}\` (\`${UPSTREAM_REF}\`)"
+                echo "- **Incoming commits**: \`${BEHIND}\`"
+                echo ""
+                echo "### Unresolved conflicts"
+                echo '```text'
+                echo "${REMAINING}"
+                echo '```'
+              } >> "${GITHUB_STEP_SUMMARY}"
               git merge --abort
               exit 1
             fi
@@ -86,11 +110,21 @@ jobs:
             git commit --no-edit
           fi
 
+          KVER_LINE=$(awk '/^(VERSION|PATCHLEVEL|SUBLEVEL) =/{printf "%s.", $3}' Makefile | sed 's/\.$//')
+          {
+            echo "## Upstream Kernel Sync Summary"
+            echo "- **Source**: \`${UPSTREAM_SOURCE}\` (\`${UPSTREAM_REF}\`)"
+            echo "- **Merged commits**: \`${BEHIND}\`"
+            echo "- **Kernel version**: \`${KVER_LINE}\`"
+            echo "- **Whitelisted resolutions**: \`${RESOLVED[*]:-none}\`"
+            echo "- **Dry-run**: \`${DRY_RUN}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
           echo "=== Clean merge succeeded! ==="
           head -n 5 Makefile
           git log -n 5 --oneline
 
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
+          if [ "${DRY_RUN}" = "true" ]; then
             echo "Dry-run enabled; skipping push."
           else
             git push origin "HEAD:${GITHUB_REF_NAME}"
