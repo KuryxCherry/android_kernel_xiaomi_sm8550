@@ -17,7 +17,7 @@
 | 分类 | 已启用定制项 | 核心入口 / 配置 |
 | :--- | :--- | :--- |
 | **网络** | TCP **BBRv3** + 默认 **FQ** qdisc；TTL/HL 修改支持 | `CONFIG_TCP_CONG_BBR3=y`、`CONFIG_DEFAULT_TCP_CONG="bbr3"`、`CONFIG_DEFAULT_NET_SCH="fq"`、`CONFIG_IP_NF_TARGET_TTL=y` |
-| **内存与 ZRAM** | **MGLRU** 默认启用且 `min_ttl_ms=1000`；**LZ4 1.10.0 + ARM64 NEON** 汇编加速；默认 ZRAM 压缩 `lz4`；**ZRAM Writeback** 与内存追踪接口（默认不挂载 `backing_dev`，按需启用） | `CONFIG_LRU_GEN_ENABLED=y`、`mm/vmscan.c`、`lib/lz4/`、`CONFIG_ZRAM_DEF_COMP="lz4"`、`CONFIG_ZRAM_WRITEBACK=y`、`CONFIG_ZRAM_MEMORY_TRACKING=y` |
+| **内存与 ZRAM** | **MGLRU** 默认启用且 `min_ttl_ms=1000`；纯上游 **LZ4 v1.11.1**（已移除树外 `lz4armv8` NEON 汇编，避免 4KB ZRAM 解压的 FPU 切换/关抢占开销）；默认 ZRAM 压缩 `lz4`；**ZRAM Writeback** 与内存追踪接口（默认不挂载 `backing_dev`，按需启用） | `CONFIG_LRU_GEN_ENABLED=y`、`mm/vmscan.c`、`lib/lz4/`、`CONFIG_ZRAM_DEF_COMP="lz4"`、`CONFIG_ZRAM_WRITEBACK=y`、`CONFIG_ZRAM_MEMORY_TRACKING=y` |
 | **省电与唤醒** | **RCU_LAZY** 默认启用；**省电工作队列**默认开启；唤醒/定时/PCI PME 省电微调；静默 AVC audit 与 Binder 调试日志 | `# CONFIG_RCU_LAZY_DEFAULT_OFF is not set`、`CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y`、`security/lsm_audit.c`、`drivers/android/binder.c` |
 | **存储与文件系统** | 块设备队列 `read_ahead_kb` 默认上限 **128 KB**（防 `post_boot` 拉高至 512 KB）；内置 **Samsung SSG**（含 cgroup 前后台浅队列限流适配）与 **ADIOS v3.3.0** I/O 调度器（与默认 `bfq` 共存，可热切换）；F2FS 拥塞停顿缓解、增大最小 fsync 块数、缩短紧急 GC 休眠；NTFS3 读写支持 | `block/blk-sysfs.c`、`block/ssg-*.{c,h}`、`CONFIG_MQ_IOSCHED_SSG(_CGROUP)=y`、`block/adios.c`、`CONFIG_MQ_IOSCHED_ADIOS=y`、`fs/f2fs/`、`CONFIG_NTFS3_FS=y` |
 | **调度（Melt 极简路线）** | 保持高通原生 `sched_walt` EAS 主干，仅合入纯主线精准修复：去除 `do_idle()` 多余 `rmb()`、跳过 `rto_next_cpu()` 空推送、`migrate_misfit` 不污染均衡间隔、`_nohz_idle_balance` 优先小核升序扫描 | `kernel/sched/idle.c`、`kernel/sched/rt.c`、`kernel/sched/fair.c` |
@@ -29,6 +29,14 @@
 ## 二、详细变更日志（按时间倒序）
 
 ### 2026-11-25
+
+- **`1cdd5b43f8`** — `lib/lz4: upgrade to pure upstream LZ4 v1.11.1 and drop lz4armv8 NEON`
+  - **改动文件**：`lib/lz4/{Makefile,lz4.h,lz4.c,lz4hc.h,lz4hc.c}`、删除 `lib/lz4/lz4armv8/*`、`crypto/lz4.c`、`crypto/lz4hc.c`、`fs/f2fs/compress.c`、`fs/incfs/data_mgmt.c`
+  - **内容**：
+    - 切换为纯上游 **`lz4/lz4 v1.11.1`**（仅保留极简内核 `LZ4_FREESTANDING` / `wrkmem` / 19 个标准 `EXPORT_SYMBOL` 胶水与 `LZ4HC_HEAPMODE=1` 防内核栈溢出），彻底移除树外 `lz4armv8` NEON 汇编路径；
+    - 消除 4KB ZRAM 解压时每次调用 `kernel_neon_begin()/end()` 带来的关抢占与 FPU 现场保存开销，同步获得 `v1.11.0/v1.11.1` 小数据块优化与边界修复，并大幅简化后续上游 LZ4 跟进；
+    - 将 `crypto/lz4{,hc}.c`、`fs/f2fs/compress.c`、`fs/incfs/data_mgmt.c` 清理回标准 `LZ4_decompress_safe()`。
+  - **回退**：直接 `git revert 1cdd5b43f8`。
 
 - **`1c3905a812`** — `block: port Samsung SSG I/O scheduler with cgroup support for Linux 5.15`
   - **改动文件**：`block/ssg-iosched.c`、`block/ssg-cgroup.c`、`block/ssg-cgroup.h`、`block/Kconfig.iosched`、`block/Makefile`、`arch/arm64/configs/vendor/socrates_GKI.config`
