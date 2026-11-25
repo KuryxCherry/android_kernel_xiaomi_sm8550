@@ -55,6 +55,10 @@ env:
   CLANG_VERSION: r596125
   CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/mirror-goog-main-llvm-toolchain-source/clang-r596125.tar.gz
   ANYKERNEL_REPO: https://github.com/osm0sis/AnyKernel3.git
+  CCACHE_COMPRESS: "1"
+  CCACHE_COMPRESSLEVEL: "6"
+  CCACHE_SLOPPINESS: "time_macros,file_macro"
+  CCACHE_NOHASHDIR: "1"
 
 jobs:
   build:
@@ -64,10 +68,16 @@ jobs:
     timeout-minutes: 350
 
     steps:
-      - name: 释放 Runner 磁盘空间
+      - name: 检查并按需释放 Runner 磁盘空间
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          df -h
+          AVAIL_GB=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
+          echo "Root filesystem available: ${AVAIL_GB}G"
+          if [ "${AVAIL_GB:-0}" -lt 35 ] || [ "${{ inputs.enable_lto || 'thin' }}" = "full" ]; then
+            sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          else
+            echo "Disk space sufficient (${AVAIL_GB}G >= 35G), skipping slow cleanup."
+          fi
+          df -h /
 
       - name: 配置 ZRAM + 24GB Swap（仅 Full LTO 启用）
         if: ${{ (inputs.enable_lto || 'thin') == 'full' }}
@@ -152,19 +162,20 @@ jobs:
       - name: 缓存 ccache
         uses: actions/cache@v4
         with:
-          path: ~/.ccache
-          key: ccache-sm8550-${{ env.CLANG_VERSION }}-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.ksu_variant }}-${{ github.sha }}
+          path: ~/.cache/ccache
+          key: ccache-sm8550-${{ env.CLANG_VERSION }}-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.lto_mode }}-${{ steps.meta.outputs.ksu_variant }}-${{ github.sha }}
           restore-keys: |
-            ccache-sm8550-${{ env.CLANG_VERSION }}-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.ksu_variant }}-
-            ccache-sm8550-${{ env.CLANG_VERSION }}-${{ steps.meta.outputs.device }}-
-            ccache-sm8550-${{ env.CLANG_VERSION }}-
+            ccache-sm8550-${{ env.CLANG_VERSION }}-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.lto_mode }}-${{ steps.meta.outputs.ksu_variant }}-
+            ccache-sm8550-${{ env.CLANG_VERSION }}-${{ steps.meta.outputs.device }}-${{ steps.meta.outputs.lto_mode }}-
 
       - name: 配置并编译内核 Image
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
           export PATH="${{ github.workspace }}/toolchain/clang/bin:${PATH}"
+          export CCACHE_DIR="${HOME}/.cache/ccache"
           export KBUILD_BUILD_USER="github-actions"
           export KBUILD_BUILD_HOST="sm8550-ci"
+          mkdir -p "${CCACHE_DIR}"
           clang --version
           ccache -M 4G
           ccache -z
