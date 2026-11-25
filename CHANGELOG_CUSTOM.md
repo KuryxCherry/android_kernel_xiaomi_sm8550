@@ -30,6 +30,15 @@
 
 ### 2026-11-25
 
+- **`1f96441463`** — `lib/lz4: route in-place decompression to safe_decode and disable LZ4_WILDCOPY64`
+  - **改动文件**：`lib/lz4/lz4.c`、`lib/lz4/Makefile`
+  - **内容**：修复上游 LZ4 `v1.11.1` 在 `aarch64` 默认启用 `LZ4_WILDCOPY64=1`（64B 快拷越界）超出 EROFS 48B 原地解压安全边距、导致 `/vendor` `/odm` 报 `z_erofs_lz4_decompress_mem: failed to decompress -3` 的问题；在 `LZ4_decompress_generic()` 中将重叠原地解压路由至 `safe_decode`（`8B wildcopy + memmove`）并设 `-DLZ4_WILDCOPY64=0`，同时保持 ZRAM/F2FS 满速 `LZ4_FAST_DEC_LOOP=1`。
+  - **回退**：`git revert 1f96441463`。
+
+- **`9b26dba603` / `3ae415be06`** — `block: elevator: match vendor_init subcontext (PPID 1) and expose default_iosched param`
+  - **改动文件**：`block/elevator.c`
+  - **内容**：暴露 `/sys/module/elevator/parameters/default_iosched` 参数消除 Clang 22 常量条件告警，并复用 `is_init_or_init_child()`（同时匹配 PID 1 与 Android Treble `vendor_init` PPID 1 子进程），确保开机无损直落 `[ssg]` 且开机后随时可自由热切。
+
 - **`e28486f19a`** — `block: add Kconfig direct defaults for I/O scheduler and read_ahead_kb`
   - **改动文件**：`block/Kconfig.iosched`、`block/Kconfig`、`block/elevator.c`、`block/blk-sysfs.c`、`mm/backing-dev.c`、`block/blk-settings.c`、`arch/arm64/configs/vendor/socrates_GKI.config`、`.github/workflows/build_full_kernel.yml`
   - **内容**：
