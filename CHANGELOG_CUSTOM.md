@@ -4,6 +4,7 @@
 > - 本文件记录主内核仓库（`KuryxCherry/android_kernel_xiaomi_sm8550`，`lineage-24.0` 分支）相对 LineageOS 上游的全部自定义内核优化、驱动修复、配置改动与 CI 架构变更，配套外置驱动仓库见 [`KuryxCherry/android_kernel_xiaomi_sm8550-modules`](https://github.com/KuryxCherry/android_kernel_xiaomi_sm8550-modules)（见其 `CHANGELOG_MODULES.md`）。
 > - **对编译零影响**：纯 Markdown 文档，不参与 Kbuild 编译，不影响内核镜像、`ccache` 命中率与后续上游合并（`sync_upstream.yml`），也不会触发任何自动构建。
 > - **维护约定**：后续每次向本仓库提交优化或配置变更时，请在下方「详细变更日志」顶部按时间倒序同步追加记录（注明日期、Commit SHA、改动文件、目的与回退方法）。
+> - **记录规范**：所有变更日志、Commit 说明、配置注释与构建说明仅客观描述具体改动（加入了什么、调整了什么、移植了什么上游功能/机制本身），**严禁写入任何第三方个人内核项目名称**。
 
 ---
 
@@ -21,7 +22,7 @@
 | **内存与 ZRAM** | **MGLRU** 默认启用且 `min_ttl_ms=1000`；纯上游 **LZ4 v1.11.1**（已移除树外 `lz4armv8` NEON，原地解压自动路由 `safe_decode`，兼顾 ZRAM 高速与 EROFS 零报错）；默认 ZRAM 压缩 `lz4`；**ZRAM Writeback** 与内存追踪接口（默认不挂载 `backing_dev`，按需启用） | `CONFIG_LRU_GEN_ENABLED=y`、`mm/vmscan.c`、`lib/lz4/`、`CONFIG_ZRAM_DEF_COMP="lz4"`、`CONFIG_ZRAM_WRITEBACK=y`、`CONFIG_ZRAM_MEMORY_TRACKING=y` |
 | **省电与唤醒** | **RCU_LAZY** 默认启用；**省电工作队列**默认开启；唤醒/定时/PCI PME 省电微调；静默 AVC audit 与 Binder 调试日志 | `# CONFIG_RCU_LAZY_DEFAULT_OFF is not set`、`CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y`、`security/lsm_audit.c`、`drivers/android/binder.c` |
 | **存储与文件系统** | Kconfig 无损直接指定默认 I/O 调度器（`CONFIG_DEFAULT_IOSCHED="ssg"`）与块预读（`CONFIG_DEFAULT_READ_AHEAD_KB=128`，仅规范开机 `init`/`vendor_init` 非零写入，开机后完全自由调整）；内置 **Samsung SSG**（含 cgroup 前后台浅队列限流适配与完整 RCU/refcount 保护）与 **ADIOS v3.3.0** I/O 调度器（默认开机启用 **SSG**，与 `bfq` / `adios` 共存且随时可热切换）；F2FS 拥塞停顿缓解、增大最小 fsync 块数、缩短紧急 GC 休眠；NTFS3 读写支持 | `block/blk.h`、`block/elevator.c`、`block/blk-sysfs.c`、`block/ssg-*.{c,h}`、`block/adios.c`、`fs/f2fs/`、`CONFIG_NTFS3_FS=y` |
-| **调度（Melt 极简路线）** | 保持高通原生 `sched_walt` EAS 主干，仅合入纯主线精准修复：去除 `do_idle()` 多余 `rmb()`、跳过 `rto_next_cpu()` 空推送、`migrate_misfit` 不污染均衡间隔、`_nohz_idle_balance` 优先小核升序扫描 | `kernel/sched/idle.c`、`kernel/sched/rt.c`、`kernel/sched/fair.c` |
+| **调度优化** | 保持高通原生 `sched_walt` EAS 主干，合入 4 项 Linux 主线精准修复：去除 `do_idle()` 多余 `rmb()`、跳过 `rto_next_cpu()` 空推送、`migrate_misfit` 不污染均衡间隔、`_nohz_idle_balance` 优先小核升序扫描 | `kernel/sched/idle.c`、`kernel/sched/rt.c`、`kernel/sched/fair.c` |
 | **进程冻结（墓碑）** | 内建 **Re-Kernel v11.7**（Generic Netlink） | `drivers/rekernel/`、`CONFIG_REKERNEL=y` |
 | **架构与指令微调** | ARM64 `clear_page` 16 字节对齐、`copy_template` 流式预取、`list_lru` 无锁快路径 | `arch/arm64/lib/`、`mm/list_lru.c` |
 
@@ -94,7 +95,7 @@
 
 - **`16841ec045`** — `sched: backport mainline idle/rt/misfit and asym-idle balance fixes`
   - **改动文件**：`kernel/sched/idle.c`、`kernel/sched/rt.c`、`kernel/sched/fair.c`
-  - **内容**：遵循 Melt Kernel 主干克制原则（完整保留高通原生 `sched_walt` EAS），合入 4 项纯上游精准修复（去 `do_idle` 多余 `rmb()`、跳过 `rto_next_cpu` 空推送、`migrate_misfit` 不污染均衡计数与间隔、`_nohz_idle_balance` 升序小核优先）。
+  - **内容**：保留高通原生 `sched_walt` EAS 主干，合入 4 项 Linux 主线精准修复（去除 `do_idle` 多余 `rmb()`、跳过 `rto_next_cpu` 空推送、`migrate_misfit` 不污染均衡计数与间隔、`_nohz_idle_balance` 升序小核优先）。
 
 - **`71349d892e`** — `mm/block: set default MGLRU min_ttl_ms to 1000 and cap queue read_ahead_kb to 128`
   - **改动文件**：`mm/vmscan.c`、`block/blk-sysfs.c`
@@ -129,7 +130,7 @@
 - **`d3d7d6a5eb`** — `arm64: socrates: enable RCU_LAZY by default and apply mm/f2fs micro-optimizations`
   - **内容**：默认开启 `RCU_LAZY`；`list_lru_count_one()` 快路径跳过多余 RCU 读锁；F2FS 紧急 GC 休眠由 500ms 缩至 50ms。
 
-- **`49e2ddf0d9`** — `kernel: silence AVC audit and binder debug logs by default (Melt style)`
+- **`49e2ddf0d9`** — 默认静默 AVC 审计与 Binder 调试日志
   - **内容**：默认静默 SELinux AVC audit 刷屏日志（保留 `disable_audit_log` 运行时模块参数可随时恢复）及 Binder debug 日志。
 
 - **`4678a3a783`** — `kernel: backport safe ARM64 micro-opts and power/wakeup cleanups`
