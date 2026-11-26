@@ -18,7 +18,7 @@
 | 分类 | 已启用定制项 | 核心入口 / 配置 |
 | :--- | :--- | :--- |
 | **网络** | TCP **BBRv3** + 默认 **FQ** qdisc；TTL/HL 修改支持 | `vendor/sm8550_custom_GKI.config`（`CONFIG_TCP_CONG_BBR3=y`、`CONFIG_DEFAULT_TCP_CONG="bbr3"`、`CONFIG_DEFAULT_NET_SCH="fq"`、`CONFIG_IP_NF_TARGET_TTL=y`） |
-| **内存与 ZRAM** | **MGLRU** 默认启用且 `min_ttl_ms=1000`；纯上游 **LZ4 v1.11.1**（已移除树外 `lz4armv8` NEON，原地解压自动路由 `safe_decode`，兼顾 ZRAM 高速与 EROFS 零报错）；默认 ZRAM 压缩 `lz4`；**ZRAM Writeback** 与内存追踪接口（默认不挂载 `backing_dev`，按需启用） | `CONFIG_LRU_GEN_ENABLED=y`、`mm/vmscan.c`、`lib/lz4/`、`CONFIG_ZRAM_DEF_COMP="lz4"`、`CONFIG_ZRAM_WRITEBACK=y`、`CONFIG_ZRAM_MEMORY_TRACKING=y` |
+| **内存与 ZRAM** | **MGLRU** 默认启用且 `min_ttl_ms=1000`；移植上游 **Linux 6.6 LTS `zsmalloc`**（12 级 fullness 分组、可配置页链 `CONFIG_ZSMALLOC_CHAIN_SIZE=8`、简化锁模型与 `local_lock_t` 每核映射锁）；纯上游 **LZ4 v1.11.1**（已移除树外 `lz4armv8` NEON，原地解压自动路由 `safe_decode`，兼顾 ZRAM 高速与 EROFS 零报错）；默认 ZRAM 压缩 `lz4`；**ZRAM Writeback** 与内存追踪接口（默认不挂载 `backing_dev`，按需启用） | `CONFIG_LRU_GEN_ENABLED=y`、`mm/vmscan.c`、`mm/zsmalloc.c`、`CONFIG_ZSMALLOC_CHAIN_SIZE=8`、`lib/lz4/`、`CONFIG_ZRAM_DEF_COMP="lz4"`、`CONFIG_ZRAM_WRITEBACK=y`、`CONFIG_ZRAM_MEMORY_TRACKING=y` |
 | **省电与唤醒** | **RCU_LAZY** 默认启用；**省电工作队列**默认开启；唤醒/定时/PCI PME 省电微调；静默 AVC audit 与 Binder 调试日志 | `# CONFIG_RCU_LAZY_DEFAULT_OFF is not set`、`CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y`、`security/lsm_audit.c`、`drivers/android/binder.c` |
 | **存储与文件系统** | Kconfig 无损直接指定默认 I/O 调度器（`CONFIG_DEFAULT_IOSCHED="ssg"`）与块预读（`CONFIG_DEFAULT_READ_AHEAD_KB=128`，仅规范开机 `init`/`vendor_init` 非零写入，开机后完全自由调整）；内置 **Samsung SSG**（含 cgroup 前后台浅队列限流适配与完整 RCU/refcount 保护）与 **ADIOS v3.3.0** I/O 调度器（默认开机启用 **SSG**，与 `bfq` / `adios` 共存且随时可热切换）；F2FS 拥塞停顿缓解、增大最小 fsync 块数、缩短紧急 GC 休眠；NTFS3 读写支持 | `block/blk.h`、`block/elevator.c`、`block/blk-sysfs.c`、`block/ssg-*.{c,h}`、`block/adios.c`、`fs/f2fs/`、`CONFIG_NTFS3_FS=y` |
 | **调度优化** | 保持高通原生 `sched_walt` EAS 主干，合入 4 项 Linux 主线精准修复：去除 `do_idle()` 多余 `rmb()`、跳过 `rto_next_cpu()` 空推送、`migrate_misfit` 不污染均衡间隔、`_nohz_idle_balance` 优先小核升序扫描 | `kernel/sched/idle.c`、`kernel/sched/rt.c`、`kernel/sched/fair.c` |
@@ -30,6 +30,16 @@
 ## 二、详细变更日志（按时间倒序）
 
 ### 2026-11-26
+
+- **`6efadb0182`** — `mm/zsmalloc: backport upstream Linux 6.6 LTS zsmalloc for 5.15`
+  - **改动文件**：`mm/zsmalloc.c`、`include/linux/zsmalloc.h`、`mm/Kconfig`、`arch/arm64/configs/vendor/sm8550_custom_GKI.config`、`.github/workflows/build_full_kernel.yml`
+  - **内容**：
+    - 移植上游 **Linux 6.6 LTS（`linux-6.6.y @ 6183c6579356`）** `mm/zsmalloc.c` 与 `include/linux/zsmalloc.h`（上游主要作者：Sergey Senozhatsky、Minchan Kim、Nhat Pham、Harry Yoo）：
+      - 引入可配置 `zspage` 页链长度 `CONFIG_ZSMALLOC_CHAIN_SIZE`（范围 `4..16`，默认 `8`，同步在共享片段 `sm8550_custom_GKI.config` 显式设为 `8`）及 `calculate_zspage_chain_size()`、`ISOLATED_BITS=5`；
+      - 引入 12 级细粒度占用率分组（`ZS_INUSE_RATIO_0` ~ `ZS_INUSE_RATIO_100`）提升压缩页拼接密度与整理效率；
+      - 同步 6.6 `pool->lock` + 每 `zspage->lock` 简化锁模型（移除旧句柄位自旋锁与迁移期 `zspage` 列表隔离）、`local_lock_t` 每核映射区锁、`zspage->huge` 位域、`compaction_in_progress` 并发整理防护及 `zs_lookup_class_index()` 导出，并保留 `!CONFIG_COMPACTION` 下清除 `__GFP_MOVABLE` 的修复；
+    - 极简 5.15 兼容适配：保留 5.15 `zsmalloc_mnt` 伪文件系统 + 模块级共享 `zsmalloc_inode` 与 `address_space_operations` 替代 6.x `movable_operations`，适配单参 `register_shrinker()` 与 `CONFIG_ZPOOL` 四参 `zs_zpool_create()`，保持全部既有 `zs_*` 导出符号与 `zram.ko` 100% 二进制接口兼容。
+  - **回退**：`git revert 6efadb0182`。
 
 - **`a52e82d93f`** — `ci: unify full kernel build workflow, modularize packaging scripts, and remove obsolete workflows`
   - **改动文件**：删除 `.github/workflows/apply_patches.yml` 与 `.github/workflows/build_kernel.yml`；新增 `.github/scripts/stage_modules.py` 与 `.github/scripts/pack_anykernel.sh`；重构 `.github/workflows/build_full_kernel.yml` 与 `.github/workflows/sync_upstream.yml`
