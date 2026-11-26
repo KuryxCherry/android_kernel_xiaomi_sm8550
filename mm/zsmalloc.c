@@ -1742,7 +1742,8 @@ static void migrate_write_lock(struct zspage *zspage)
 
 static void migrate_write_lock_nested(struct zspage *zspage)
 {
-	write_lock_nested(&zspage->lock, SINGLE_DEPTH_NESTING);
+	/* Linux 5.15 does not define write_lock_nested(). */
+	write_lock(&zspage->lock);
 }
 
 static void migrate_write_unlock(struct zspage *zspage)
