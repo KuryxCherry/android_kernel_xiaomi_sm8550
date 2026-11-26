@@ -31,15 +31,15 @@
 
 ### 2026-11-26
 
-- **`6efadb0182`** — `mm/zsmalloc: backport upstream Linux 6.6 LTS zsmalloc for 5.15`
+- **`6efadb0182` / `64b404b583`** — `mm/zsmalloc: backport upstream Linux 6.6 LTS zsmalloc for 5.15`
   - **改动文件**：`mm/zsmalloc.c`、`include/linux/zsmalloc.h`、`mm/Kconfig`、`arch/arm64/configs/vendor/sm8550_custom_GKI.config`、`.github/workflows/build_full_kernel.yml`
   - **内容**：
     - 移植上游 **Linux 6.6 LTS（`linux-6.6.y @ 6183c6579356`）** `mm/zsmalloc.c` 与 `include/linux/zsmalloc.h`（上游主要作者：Sergey Senozhatsky、Minchan Kim、Nhat Pham、Harry Yoo）：
       - 引入可配置 `zspage` 页链长度 `CONFIG_ZSMALLOC_CHAIN_SIZE`（范围 `4..16`，默认 `8`，同步在共享片段 `sm8550_custom_GKI.config` 显式设为 `8`）及 `calculate_zspage_chain_size()`、`ISOLATED_BITS=5`；
       - 引入 12 级细粒度占用率分组（`ZS_INUSE_RATIO_0` ~ `ZS_INUSE_RATIO_100`）提升压缩页拼接密度与整理效率；
       - 同步 6.6 `pool->lock` + 每 `zspage->lock` 简化锁模型（移除旧句柄位自旋锁与迁移期 `zspage` 列表隔离）、`local_lock_t` 每核映射区锁、`zspage->huge` 位域、`compaction_in_progress` 并发整理防护及 `zs_lookup_class_index()` 导出，并保留 `!CONFIG_COMPACTION` 下清除 `__GFP_MOVABLE` 的修复；
-    - 极简 5.15 兼容适配：保留 5.15 `zsmalloc_mnt` 伪文件系统 + 模块级共享 `zsmalloc_inode` 与 `address_space_operations` 替代 6.x `movable_operations`，适配单参 `register_shrinker()` 与 `CONFIG_ZPOOL` 四参 `zs_zpool_create()`，保持全部既有 `zs_*` 导出符号与 `zram.ko` 100% 二进制接口兼容。
-  - **回退**：`git revert 6efadb0182`。
+    - 极简 5.15 兼容适配：保留 5.15 `zsmalloc_mnt` 伪文件系统 + 模块级共享 `zsmalloc_inode` 与 `address_space_operations` 替代 6.x `movable_operations`，适配单参 `register_shrinker()`、`CONFIG_ZPOOL` 四参 `zs_zpool_create()` 与 `migrate_write_lock_nested()` 的 `write_lock()` 回退（5.15 无 `write_lock_nested()`），保持全部既有 `zs_*` 导出符号与 `zram.ko` 100% 二进制接口兼容。
+  - **回退**：`git revert 64b404b583 6efadb0182`。
 
 - **`a52e82d93f`** — `ci: unify full kernel build workflow, modularize packaging scripts, and remove obsolete workflows`
   - **改动文件**：删除 `.github/workflows/apply_patches.yml` 与 `.github/workflows/build_kernel.yml`；新增 `.github/scripts/stage_modules.py` 与 `.github/scripts/pack_anykernel.sh`；重构 `.github/workflows/build_full_kernel.yml` 与 `.github/workflows/sync_upstream.yml`
