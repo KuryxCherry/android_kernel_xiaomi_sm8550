@@ -4,7 +4,7 @@
 > - 本文件记录主内核仓库（`KuryxCherry/android_kernel_xiaomi_sm8550`，`lineage-24.0` 分支）相对 LineageOS 上游的全部自定义内核优化、驱动修复、配置改动与 CI 架构变更，配套外置驱动仓库见 [`KuryxCherry/android_kernel_xiaomi_sm8550-modules`](https://github.com/KuryxCherry/android_kernel_xiaomi_sm8550-modules)（见其 `CHANGELOG_MODULES.md`）。
 > - **对编译零影响**：纯 Markdown 文档，不参与 Kbuild 编译，不影响内核镜像、`ccache` 命中率与后续上游合并（`sync_upstream.yml`），也不会触发任何自动构建。
 > - **维护约定**：后续每次向本仓库提交优化或配置变更时，请在下方「详细变更日志」顶部按时间倒序同步追加记录（注明日期、Commit SHA、改动文件、目的与回退方法）。
-> - **记录规范**：所有变更日志、Commit 说明、配置注释与构建说明仅客观描述具体改动（加入了什么、调整了什么、移植了什么上游功能/机制本身），**严禁写入任何第三方个人内核项目名称**。
+> - **记录规范**：变更日志与 Commit 说明只客观记录具体改动（新增、调整或移植了什么）；直接移植/使用的功能与补丁**须标明真实上游来源与原作者以尊重开发者**，但**不得写成「使用/学习 XX 项目的优化」「XX 风格/路线」等表述去随意挂名其他个人内核项目**。
 
 ---
 
