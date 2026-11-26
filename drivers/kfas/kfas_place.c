@@ -306,13 +306,28 @@ static int kfas_pick_crit_cpu_locked(int rank, bool allow_prime, u32 demand)
 		return -1;
 
 	/*
-	 * Rank 0 (heaviest frame thread): Prime X3 when enabled & active load
-	 * warrants X3, else high-IPC Gold (A715 #0).
+	 * Rank 0 (heaviest frame thread): prefer high-IPC efficiency Gold
+	 * (Cortex-A715 #0) for light/moderate workloads; escalate to Prime X3
+	 * only when single-thread load, perf pressure, or real jank warrants X3.
 	 */
 	if (rank == 0) {
+		u32 dem_bar = 640;
+		u32 perf_bar = 780;
+		u32 jank_bar = 2;
+
+		if (g_kfas.mode == KFAS_MODE_FAST) {
+			dem_bar = 450;
+			perf_bar = 620;
+			jank_bar = 1;
+		} else if (g_kfas.mode == KFAS_MODE_PERFORMANCE) {
+			dem_bar = 540;
+			perf_bar = 700;
+			jank_bar = 2;
+		}
+
 		if (allow_prime && t->prime_cpu >= 0 &&
-		    (demand >= 220 || g_kfas.perf_level >= 520 ||
-		     g_kfas.jank_streak > 0))
+		    (demand >= dem_bar || g_kfas.perf_level >= perf_bar ||
+		     g_kfas.jank_streak >= jank_bar))
 			return t->prime_cpu;
 		if (t->nr_high_mid > 0)
 			return t->high_mid_cpus[0];
@@ -349,6 +364,8 @@ static void kfas_place_pass_locked(bool urgent)
 	cpumask_t used_cpus;
 	u32 nr_next = 0;
 	bool have_prev;
+	bool used_prime = false;
+	bool want_boost;
 
 	if (!g_kfas.session_active || !tgid || !g_kfas.rendering_active ||
 	    !g_kfas.placement_enable || !g_scan_buf || !g_next_managed ||
@@ -357,12 +374,6 @@ static void kfas_place_pass_locked(bool urgent)
 
 	if (!g_kfas.topo.ready)
 		kfas_detect_topology();
-
-	/* Unpause prime & big cores while actively rendering */
-	if (g_kfas.unpause_big && cfg->prime_enable)
-		kfas_set_core_ctl_boost_locked(true);
-	else
-		kfas_set_core_ctl_boost_locked(false);
 
 	/* Phase 1: Snapshot thread group under RCU (no sleeping!) */
 	rcu_read_lock();
@@ -522,14 +533,20 @@ static void kfas_place_pass_locked(bool urgent)
 		}
 		if (tgt_cpu >= 0)
 			cpumask_set_cpu(tgt_cpu, &used_cpus);
+		if (tgt_cpu == g_kfas.topo.prime_cpu && tgt_cpu >= 0) {
+			used_prime = true;
+			if (g_kfas.unpause_big && cfg->prime_enable)
+				kfas_set_core_ctl_boost_locked(true);
+		}
 
-		/* Dynamic per-task uclamp_min scaled with frame pressure */
+		/* Dynamic per-task uclamp_min scaled gently with frame pressure */
 		umin = cfg->crit_uclamp_min +
-		       (g_kfas.perf_level * 220) / 1000;
+		       (g_kfas.perf_level * 160) / 1000;
 		if (urgent || g_kfas.jank_streak >= 2)
 			umin = min_t(u32, 920, umin + 140);
-		if (tgt_cpu == g_kfas.topo.prime_cpu && cfg->prime_enable)
-			umin = max_t(u32, umin, 600);
+		if (tgt_cpu == g_kfas.topo.prime_cpu && cfg->prime_enable &&
+		    (g_kfas.perf_level >= 750 || g_kfas.jank_streak >= 2))
+			umin = max_t(u32, umin, 560);
 		umin = clamp_t(u32, umin, 280, 960);
 
 #if IS_ENABLED(CONFIG_SCHED_WALT)
@@ -564,6 +581,12 @@ static void kfas_place_pass_locked(bool urgent)
 			put_task_struct(task);
 		}
 	}
+
+	g_kfas.prime_in_use = used_prime;
+	want_boost = g_kfas.unpause_big && cfg->prime_enable &&
+		     (used_prime || g_kfas.mode >= KFAS_MODE_PERFORMANCE ||
+		      g_kfas.perf_level >= 720 || g_kfas.jank_streak >= 2);
+	kfas_set_core_ctl_boost_locked(want_boost);
 
 	/* Tier 2: Gently contain low-demand worker threads off X3/A715 */
 	if (g_kfas.contain_workers && cfg->worker_uclamp_max > 0 &&
@@ -670,6 +693,7 @@ void kfas_place_session_start_locked(void)
 	unsigned long flags;
 
 	g_nr_prev_exec = 0;
+	g_kfas.prime_in_use = false;
 	raw_spin_lock_irqsave(&g_kfas.wake_lock, flags);
 	memset(g_kfas.wake_slots, 0, sizeof(g_kfas.wake_slots));
 	raw_spin_unlock_irqrestore(&g_kfas.wake_lock, flags);
@@ -682,6 +706,7 @@ void kfas_place_session_start_locked(void)
 
 void kfas_place_idle_relax_locked(void)
 {
+	g_kfas.prime_in_use = false;
 	kfas_restore_all_managed_locked();
 	kfas_set_core_ctl_boost_locked(false);
 }
@@ -693,6 +718,7 @@ void kfas_place_session_stop_locked(void)
 		g_kfas.waking_tp_active = false;
 	}
 	g_nr_prev_exec = 0;
+	g_kfas.prime_in_use = false;
 	kfas_restore_all_managed_locked();
 	kfas_set_core_ctl_boost_locked(false);
 }

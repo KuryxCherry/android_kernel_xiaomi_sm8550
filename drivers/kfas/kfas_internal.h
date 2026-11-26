@@ -23,7 +23,7 @@
 #include <linux/uprobes.h>
 #include <linux/workqueue.h>
 
-#define KFAS_VERSION		"1.0.1"
+#define KFAS_VERSION		"1.0.2"
 
 #define KFAS_MAX_CLUSTERS	4
 #define KFAS_MAX_OPPS		64
@@ -248,6 +248,7 @@ struct kfas_state {
 	/* WALT bridge & thread placement */
 	const struct kfas_walt_ops *walt_ops;
 	bool core_ctl_boosted;
+	bool prime_in_use;
 	struct kfas_topo topo;
 	bool waking_tp_active;
 	raw_spinlock_t wake_lock;

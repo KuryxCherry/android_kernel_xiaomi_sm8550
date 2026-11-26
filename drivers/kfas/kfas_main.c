@@ -78,48 +78,48 @@ static void kfas_init_default_profiles(void)
 	g_kfas.mode_cfg[KFAS_MODE_POWERSAVE] = (struct kfas_mode_cfg){
 		.margin_pct = 4,
 		.up_gain = 85,
-		.down_gain = 140,
+		.down_gain = 150,
 		.down_hold_frames = 12,
-		.little_floor_khz = 1017600,
+		.little_floor_khz = 844800,
 		.temp_thresh_mc = 82000,
-		.worker_uclamp_max = 260,
-		.crit_uclamp_min = 320,
+		.worker_uclamp_max = 220,
+		.crit_uclamp_min = 290,
 		.prime_enable = false,
 	};
 
 	g_kfas.mode_cfg[KFAS_MODE_BALANCE] = (struct kfas_mode_cfg){
 		.margin_pct = 8,
 		.up_gain = 115,
-		.down_gain = 105,
-		.down_hold_frames = 18,
-		.little_floor_khz = 1228800,
+		.down_gain = 120,
+		.down_hold_frames = 16,
+		.little_floor_khz = 1017600,
 		.temp_thresh_mc = 0,
-		.worker_uclamp_max = 320,
-		.crit_uclamp_min = 380,
+		.worker_uclamp_max = 260,
+		.crit_uclamp_min = 320,
 		.prime_enable = true,
 	};
 
 	g_kfas.mode_cfg[KFAS_MODE_PERFORMANCE] = (struct kfas_mode_cfg){
 		.margin_pct = 12,
 		.up_gain = 150,
-		.down_gain = 75,
-		.down_hold_frames = 28,
-		.little_floor_khz = 1344000,
+		.down_gain = 85,
+		.down_hold_frames = 24,
+		.little_floor_khz = 1228800,
 		.temp_thresh_mc = 95000,
-		.worker_uclamp_max = 380,
-		.crit_uclamp_min = 480,
+		.worker_uclamp_max = 320,
+		.crit_uclamp_min = 400,
 		.prime_enable = true,
 	};
 
 	g_kfas.mode_cfg[KFAS_MODE_FAST] = (struct kfas_mode_cfg){
 		.margin_pct = 16,
 		.up_gain = 190,
-		.down_gain = 50,
-		.down_hold_frames = 40,
-		.little_floor_khz = 1459200,
+		.down_gain = 55,
+		.down_hold_frames = 36,
+		.little_floor_khz = 1344000,
 		.temp_thresh_mc = 95000,
-		.worker_uclamp_max = 440,
-		.crit_uclamp_min = 580,
+		.worker_uclamp_max = 380,
+		.crit_uclamp_min = 500,
 		.prime_enable = true,
 	};
 }

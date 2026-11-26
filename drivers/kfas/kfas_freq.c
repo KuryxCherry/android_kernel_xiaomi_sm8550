@@ -244,7 +244,7 @@ void kfas_freq_reset_session_locked(void)
 {
 	g_kfas.rendering_active = false;
 	g_kfas.last_frame_ts_ns = 0;
-	g_kfas.perf_level = 650;
+	g_kfas.perf_level = 500;
 	g_kfas.surplus_streak = 0;
 	g_kfas.jank_streak = 0;
 	g_kfas.down_cooldown = 0;
@@ -397,35 +397,46 @@ static void kfas_apply_perf_level_locked(const struct kfas_mode_cfg *cfg,
 		} else if (i == 0) {
 			/*
 			 * Little cluster (A510): stay near efficiency sweet
-			 * spot while enforcing a sensible floor ceiling so
-			 * SurfaceFlinger / audio / net tasks never stall.
+			 * spot (900..1670 MHz) while keeping a safe floor for
+			 * SurfaceFlinger / audio / net tasks.
 			 */
-			scaled = 380 + (perf * 520) / 1000;
+			scaled = 280 + (perf * 520) / 1000;
+			if (severe_spike)
+				scaled = min_t(u32, 920, scaled + 120);
 			max_khz = kfas_pick_opp(cl, scaled,
 						cfg->little_floor_khz);
 		} else if (i == g_kfas.nr_clusters - 1 &&
 			   g_kfas.nr_clusters >= 3) {
 			/*
-			 * Prime cluster (X3): aggressive on spikes & high load,
-			 * economical at low/mid perf levels to keep thermals low.
+			 * Prime cluster (X3): keep capped near efficiency band
+			 * whenever A715 handles the game without prime pinning
+			 * so stray background bursts cannot spike X3 to 3.19GHz.
+			 * Ramp smoothly up to peak OPP once prime_in_use or
+			 * severe jank escalates load onto X3.
 			 */
-			if (!cfg->prime_enable && !severe_spike) {
-				scaled = 150 + (perf * 450) / 1000;
+			bool prime_open = cfg->prime_enable &&
+					  (g_kfas.prime_in_use ||
+					   g_kfas.mode >= KFAS_MODE_PERFORMANCE ||
+					   severe_spike);
+
+			if (!prime_open) {
+				scaled = 120 + (perf * 330) / 1000;
 			} else if (severe_spike) {
-				scaled = min_t(u32, 1000, perf + 160);
-			} else if (perf < 350) {
-				scaled = 180 + (perf * 400) / 350;
+				scaled = min_t(u32, 1000, perf + 140);
+			} else if (perf < 500) {
+				scaled = 180 + (perf * 360) / 500;
 			} else {
-				scaled = 580 + ((perf - 350) * 420) / 650;
+				scaled = 540 + ((perf - 500) * 460) / 500;
 			}
 			max_khz = kfas_pick_opp(cl, scaled, 0);
-			if (g_kfas.jank_streak >= 3 && cfg->prime_enable)
+			if (g_kfas.jank_streak >= 3 && cfg->prime_enable &&
+			    g_kfas.prime_in_use)
 				min_khz = kfas_pick_opp(cl,
-							min_t(u32, 700, scaled),
+							min_t(u32, 650, scaled),
 							0);
 		} else {
-			/* Mid/Gold cluster (A715+A710 workhorse) */
-			scaled = 240 + (perf * 760) / 1000;
+			/* Mid/Gold cluster (A715+A710 primary workhorse) */
+			scaled = 220 + (perf * 780) / 1000;
 			if (severe_spike)
 				scaled = min_t(u32, 1000, scaled + 100);
 			max_khz = kfas_pick_opp(cl, scaled, 0);
