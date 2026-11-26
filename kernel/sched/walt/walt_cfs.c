@@ -976,7 +976,12 @@ int walt_find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
 	pipeline_cpu = wts->pipeline_cpu;
 	if ((wts->low_latency & WALT_LOW_LATENCY_MASK) &&
 			(pipeline_cpu != -1) &&
+#if IS_ENABLED(CONFIG_KFAS)
+			(walt_task_skip_min_cpu(p) ||
+			 (wts->low_latency & WALT_LOW_LATENCY_KFAS)) &&
+#else
 			walt_task_skip_min_cpu(p) &&
+#endif
 			cpumask_test_cpu(pipeline_cpu, p->cpus_ptr) &&
 			cpu_active(pipeline_cpu) &&
 			!cpu_halted(pipeline_cpu) &&

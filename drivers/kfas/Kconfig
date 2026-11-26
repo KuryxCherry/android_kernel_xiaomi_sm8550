@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0-only
+menu "Kernel Frame-Aware Scheduler (KFAS)"
+
+config KFAS
+	bool "Kernel Frame-Aware Scheduler (KFAS)"
+	depends on UPROBES && CPU_FREQ && UCLAMP_TASK
+	default n
+	help
+	  Built-in kernel-space Frame-Aware Scheduler with dual Surface uprobe
+	  telemetry (dequeueBuffer + queueBuffer), devfreq GPU bottleneck
+	  separation, multi-cluster FreqQoS closed-loop scaling, and
+	  WALT-integrated precision thread placement.
+
+	  Zero overhead when no target game session is attached.
+
+endmenu

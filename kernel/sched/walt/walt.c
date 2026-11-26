@@ -15,6 +15,7 @@
 #include <linux/cpumask.h>
 #include <linux/arch_topology.h>
 #include <linux/cpu.h>
+#include <linux/kfas.h>
 
 #include <trace/hooks/sched.h>
 #include <trace/hooks/cgroup.h>
@@ -5071,6 +5072,100 @@ static void walt_init_tg_pointers(void)
 	rcu_read_unlock();
 }
 
+#if IS_ENABLED(CONFIG_KFAS)
+static int kfas_walt_set_core_ctl_boost(bool boost)
+{
+	return core_ctl_set_boost(boost);
+}
+
+static int kfas_walt_set_task_placement(struct task_struct *p, int target_cpu,
+					bool mvp, int boost,
+					u64 boost_period_ns)
+{
+	struct walt_task_struct *wts;
+	struct rq *rq;
+	struct rq_flags rf;
+
+	if (unlikely(walt_disabled || !p))
+		return -EAGAIN;
+
+	rq = task_rq_lock(p, &rf);
+	if (READ_ONCE(p->__state) == TASK_DEAD) {
+		task_rq_unlock(rq, p, &rf);
+		return -EINVAL;
+	}
+
+	wts = (struct walt_task_struct *)p->android_vendor_data1;
+	if (!(wts->low_latency &
+	      (WALT_LOW_LATENCY_PIPELINE | WALT_LOW_LATENCY_HEAVY))) {
+		if (target_cpu >= 0 && target_cpu < nr_cpu_ids)
+			wts->pipeline_cpu = target_cpu;
+		else
+			wts->pipeline_cpu = -1;
+
+		if (mvp)
+			wts->low_latency |= WALT_LOW_LATENCY_KFAS;
+		else
+			wts->low_latency &= ~WALT_LOW_LATENCY_KFAS;
+	}
+
+	if (boost >= TASK_BOOST_NONE && boost < TASK_BOOST_END) {
+		wts->boost = boost;
+		if (boost == TASK_BOOST_NONE) {
+			wts->boost_period = 0;
+			wts->boost_expires = 0;
+		} else {
+			wts->boost_period = boost_period_ns;
+			wts->boost_expires = sched_clock() + boost_period_ns;
+		}
+	}
+
+	task_rq_unlock(rq, p, &rf);
+	return 0;
+}
+
+static void kfas_walt_clear_task_placement(struct task_struct *p)
+{
+	struct walt_task_struct *wts;
+	struct rq *rq;
+	struct rq_flags rf;
+
+	if (unlikely(walt_disabled || !p))
+		return;
+
+	rq = task_rq_lock(p, &rf);
+	wts = (struct walt_task_struct *)p->android_vendor_data1;
+	if (wts->low_latency & WALT_LOW_LATENCY_KFAS) {
+		wts->low_latency &= ~WALT_LOW_LATENCY_KFAS;
+		if (!(wts->low_latency &
+		      (WALT_LOW_LATENCY_PIPELINE | WALT_LOW_LATENCY_HEAVY)))
+			wts->pipeline_cpu = -1;
+	}
+	wts->boost = TASK_BOOST_NONE;
+	wts->boost_period = 0;
+	wts->boost_expires = 0;
+	task_rq_unlock(rq, p, &rf);
+}
+
+static u32 kfas_walt_get_task_demand_scaled(struct task_struct *p)
+{
+	struct walt_task_struct *wts;
+
+	if (unlikely(walt_disabled || !p))
+		return 0;
+
+	wts = (struct walt_task_struct *)p->android_vendor_data1;
+	return READ_ONCE(wts->demand_scaled);
+}
+
+static const struct kfas_walt_ops walt_kfas_ops = {
+	.set_core_ctl_boost = kfas_walt_set_core_ctl_boost,
+	.set_task_placement = kfas_walt_set_task_placement,
+	.clear_task_placement = kfas_walt_clear_task_placement,
+	.get_task_demand_scaled = kfas_walt_get_task_demand_scaled,
+};
+#endif
+
 static void walt_init(struct work_struct *work)
 {
 	struct ctl_table_header *hdr;
@@ -5138,6 +5233,9 @@ static void walt_init(struct work_struct *work)
 	}
 
 	topology_clear_scale_freq_source(SCALE_FREQ_SOURCE_ARCH, cpu_online_mask);
+#if IS_ENABLED(CONFIG_KFAS)
+	kfas_register_walt_ops(&walt_kfas_ops);
+#endif
 }
 
 static DECLARE_WORK(walt_init_work, walt_init);

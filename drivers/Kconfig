@@ -237,4 +237,5 @@ source "drivers/counter/Kconfig"
 
 source "drivers/most/Kconfig"
 source "drivers/rekernel/Kconfig"
+source "drivers/kfas/Kconfig"
 endmenu
