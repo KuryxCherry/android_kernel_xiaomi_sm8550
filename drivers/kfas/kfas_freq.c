@@ -247,6 +247,7 @@ void kfas_freq_reset_session_locked(void)
 	g_kfas.perf_level = 650;
 	g_kfas.surplus_streak = 0;
 	g_kfas.jank_streak = 0;
+	g_kfas.down_cooldown = 0;
 	g_kfas.cur_fps_x10 = 0;
 	g_kfas.ema_frame_us = 0;
 	g_kfas.ema_exec_us = 0;
@@ -446,11 +447,13 @@ void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s)
 {
 	const struct kfas_mode_cfg *cfg = &g_kfas.mode_cfg[g_kfas.mode];
 	struct kfas_gpu_snap gpu;
-	u64 budget_ns, eff_budget_ns;
+	u64 budget_ns, tol_ns, jank_ns, exec_ceil_ns, exec_hold_ns, ema_exec_ns;
 	u32 frame_us, exec_us, delay_us, dq_us;
-	u32 fps_x10, temp_mc;
+	u32 fps_x10, temp_mc, margin, tol_pct, ema_tol_pct, ema_jank_us;
+	u32 exec_ceil_pct;
 	enum kfas_bottleneck bn = KFAS_BN_OK;
 	bool severe = false;
+	bool frame_missed, exec_high, exec_hold;
 
 	if (!g_kfas.freq_inited && kfas_freq_ensure_init_locked() != 0)
 		return;
@@ -484,22 +487,53 @@ void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s)
 	}
 
 	budget_ns = div_u64(NSEC_PER_SEC, max_t(u32, 15, g_kfas.locked_fps));
-	eff_budget_ns = div_u64(budget_ns * (100 - min_t(u32, 35, cfg->margin_pct)),
-				100U);
+	margin = min_t(u32, 30U, cfg->margin_pct);
+
+	/*
+	 * VSync-aware frame pressure classification:
+	 *
+	 * On VSync-paced games, wall-clock frame_ns hovers right around
+	 * budget_ns (e.g. 8333 us at 120 FPS) with +/-3-6% Choreographer phase
+	 * jitter. Comparing frame_ns against budget_ns*(1-margin) misclassifies
+	 * locked full-FPS frames as CPU jank and pins perf_level at 1000.
+	 *
+	 * Separate real VSync slips from proactive CPU headroom:
+	 *  - jank_ns:      budget_ns + positive VSync jitter tolerance
+	 *  - ema_jank_us:  sustained EMA drift above 102-103% of budget
+	 *  - exec_ceil_ns: render-thread CPU headroom ceiling (scaled by margin)
+	 *  - exec_hold_ns: 10% deadband below exec_ceil_ns to prevent hunting
+	 */
+	tol_pct = margin >= 14 ? 4 : (margin >= 10 ? 5 : (margin >= 6 ? 6 : 7));
+	tol_ns = max_t(u64, div_u64(budget_ns * tol_pct, 100U), 500000ULL);
+	jank_ns = budget_ns + tol_ns;
+
+	ema_tol_pct = margin >= 12 ? 2 : 3;
+	ema_jank_us = (u32)div_u64(budget_ns * (100U + ema_tol_pct), 100000ULL);
+
+	exec_ceil_pct = clamp_t(u32, 84U - margin, 54U, 82U);
+	exec_ceil_ns = div_u64(budget_ns * exec_ceil_pct, 100U);
+	exec_hold_ns = div_u64(budget_ns * (exec_ceil_pct - 10U), 100U);
+	ema_exec_ns = (u64)g_kfas.ema_exec_us * 1000ULL;
+
+	frame_missed = (s->frame_ns > jank_ns) ||
+		       (g_kfas.ema_frame_us > ema_jank_us &&
+			s->frame_ns > budget_ns);
+	exec_high = (ema_exec_ns > exec_ceil_ns);
+	exec_hold = (ema_exec_ns >= exec_hold_ns);
 
 	kfas_gpu_get_snapshot(&gpu);
 
 	/*
 	 * Classify the dominant cause of frame-time pressure:
 	 *  1. SCHED: render thread spent >10% of frame budget waiting in runqueue.
-	 *  2. GPU:   frame missed budget while GPU is saturated & CPU exec is light.
-	 *  3. CPU:   true CPU compute pressure exceeding effective budget.
-	 *  4. OK:    frame finished cleanly inside budget.
+	 *  2. GPU:   frame slipped while GPU is saturated & CPU exec is light.
+	 *  3. CPU:   frame slipped on CPU or render exec exceeded headroom cap.
+	 *  4. OK:    frame finished cleanly inside target FPS & CPU headroom.
 	 */
 	if (s->delay_ns > div_u64(budget_ns, 10U) &&
-	    s->frame_ns > eff_budget_ns) {
+	    (frame_missed || exec_high)) {
 		bn = KFAS_BN_SCHED;
-	} else if (s->frame_ns > eff_budget_ns) {
+	} else if (frame_missed) {
 		bool gpu_saturated = gpu.valid && gpu.busy_pct >= 88;
 		bool cpu_light = s->exec_ns < div_u64(budget_ns * 45, 100U);
 		bool wait_heavy = s->dq_wait_ns > div_u64(budget_ns * 30, 100U);
@@ -510,6 +544,8 @@ void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s)
 			bn = KFAS_BN_GPU;
 		else
 			bn = KFAS_BN_CPU;
+	} else if (exec_high) {
+		bn = KFAS_BN_CPU;
 	} else {
 		bn = KFAS_BN_OK;
 	}
@@ -521,6 +557,7 @@ void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s)
 		u32 bump = 28;
 
 		g_kfas.surplus_streak = 0;
+		g_kfas.down_cooldown = cfg->down_hold_frames * 3;
 		g_kfas.jank_streak = min_t(u32, 10, g_kfas.jank_streak + 1);
 		g_kfas.perf_level = min_t(u32, 1000, g_kfas.perf_level + bump);
 		if (g_kfas.placement_enable)
@@ -530,6 +567,7 @@ void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s)
 	case KFAS_BN_GPU: {
 		/* Avoid futile CPU frequency spikes when GPU is the real wall */
 		g_kfas.surplus_streak = 0;
+		g_kfas.down_cooldown = cfg->down_hold_frames * 2;
 		if (g_kfas.jank_streak > 0)
 			g_kfas.jank_streak--;
 		if (s->exec_ns > div_u64(budget_ns * 55, 100U))
@@ -538,21 +576,41 @@ void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s)
 		break;
 	}
 	case KFAS_BN_CPU: {
-		u64 over_ns = s->frame_ns - eff_budget_ns;
-		u32 over_pm = (u32)min_t(u64, 1500ULL,
-					 div64_u64(over_ns * 1000ULL, budget_ns));
 		u32 delta;
 
 		g_kfas.surplus_streak = 0;
-		g_kfas.jank_streak = min_t(u32, 10, g_kfas.jank_streak + 1);
+		if (frame_missed) {
+			u64 over_ns = s->frame_ns > budget_ns ?
+				      (s->frame_ns - budget_ns) : 0;
+			u32 over_pm = (u32)min_t(u64, 1500ULL,
+						 div64_u64(over_ns * 1000ULL,
+							   budget_ns));
 
-		if (s->frame_ns > div_u64(budget_ns * 120, 100U)) {
-			severe = true;
-			delta = clamp_t(u32, (over_pm * cfg->up_gain) / 100,
-					65, 240);
+			g_kfas.jank_streak = min_t(u32, 10,
+						   g_kfas.jank_streak + 1);
+			g_kfas.down_cooldown = cfg->down_hold_frames * 4;
+
+			if (s->frame_ns > div_u64(budget_ns * 125, 100U)) {
+				severe = true;
+				delta = clamp_t(u32,
+						(over_pm * cfg->up_gain) / 100,
+						65, 240);
+			} else {
+				delta = clamp_t(u32,
+						(over_pm * cfg->up_gain) / 130,
+						18, 110);
+			}
 		} else {
-			delta = clamp_t(u32, (over_pm * cfg->up_gain) / 130,
-					18, 120);
+			/* Proactive headroom boost before an actual drop */
+			u64 over_ns = ema_exec_ns > exec_ceil_ns ?
+				      (ema_exec_ns - exec_ceil_ns) : 0;
+			u32 over_pm = (u32)min_t(u64, 1000ULL,
+						 div64_u64(over_ns * 1000ULL,
+							   budget_ns));
+
+			g_kfas.down_cooldown = cfg->down_hold_frames * 2;
+			delta = clamp_t(u32, (over_pm * cfg->up_gain) / 200,
+					10, 40);
 		}
 		g_kfas.perf_level = min_t(u32, 1000, g_kfas.perf_level + delta);
 		break;
@@ -560,15 +618,25 @@ void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s)
 	case KFAS_BN_OK:
 	default: {
 		g_kfas.jank_streak = 0;
+		if (exec_hold) {
+			/* Inside CPU headroom deadband: hold frequency steady */
+			g_kfas.surplus_streak = 0;
+			break;
+		}
+		if (g_kfas.down_cooldown > 0) {
+			g_kfas.down_cooldown--;
+			break;
+		}
 		g_kfas.surplus_streak++;
 		if (g_kfas.surplus_streak >= cfg->down_hold_frames) {
-			u64 head_ns = eff_budget_ns - s->frame_ns;
+			u64 head_ns = exec_ceil_ns > ema_exec_ns ?
+				      (exec_ceil_ns - ema_exec_ns) : 0;
 			u32 head_pm = (u32)min_t(u64, 1000ULL,
 						 div64_u64(head_ns * 1000ULL,
 							   budget_ns));
 			u32 step = clamp_t(u32,
-					   (head_pm * cfg->down_gain) / 280,
-					   8, 28);
+					   (head_pm * cfg->down_gain) / 360,
+					   5, 18);
 
 			if (g_kfas.perf_level > step)
 				g_kfas.perf_level -= step;

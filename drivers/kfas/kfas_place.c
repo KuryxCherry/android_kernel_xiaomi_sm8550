@@ -348,6 +348,7 @@ static void kfas_place_pass_locked(bool urgent)
 	u32 nr_crit = 0;
 	cpumask_t used_cpus;
 	u32 nr_next = 0;
+	bool have_prev;
 
 	if (!g_kfas.session_active || !tgid || !g_kfas.rendering_active ||
 	    !g_kfas.placement_enable || !g_scan_buf || !g_next_managed ||
@@ -395,6 +396,8 @@ static void kfas_place_pass_locked(bool urgent)
 		return;
 
 	/* Phase 2: Score threads by exec delta + WALT demand + wake-link */
+	have_prev = (g_nr_prev_exec > 0);
+
 	for (i = 0; i < nr_scan; i++) {
 		struct kfas_scan_entry *e = &g_scan_buf[i];
 		u64 prev_ns = kfas_find_prev_exec_locked(e->tid);
@@ -448,6 +451,11 @@ static void kfas_place_pass_locked(bool urgent)
 				continue;
 			if (g_scan_buf[i].policy != SCHED_NORMAL &&
 			    g_scan_buf[i].policy != SCHED_BATCH)
+				continue;
+			/* Skip sleeping threads that did not run in the last pass */
+			if (have_prev && g_scan_buf[i].delta_exec_us < 500 &&
+			    g_scan_buf[i].wake_hits == 0 &&
+			    !g_scan_buf[i].is_vip)
 				continue;
 
 			if (g_scan_buf[i].score > best_score) {
