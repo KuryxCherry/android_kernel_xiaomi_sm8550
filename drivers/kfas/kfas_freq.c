@@ -596,17 +596,35 @@ void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s)
 			u32 over_pm = (u32)min_t(u64, 1500ULL,
 						 div64_u64(over_ns * 1000ULL,
 							   budget_ns));
+			bool isolated_tick = (g_kfas.jank_streak == 0 &&
+					      g_kfas.ema_frame_us <= ema_jank_us &&
+					      s->frame_ns <=
+					      div_u64(budget_ns * 215, 100U));
 
 			g_kfas.jank_streak = min_t(u32, 10,
 						   g_kfas.jank_streak + 1);
-			g_kfas.down_cooldown = cfg->down_hold_frames * 4;
 
-			if (s->frame_ns > div_u64(budget_ns * 125, 100U)) {
+			if (!isolated_tick &&
+			    s->frame_ns > div_u64(budget_ns * 125, 100U)) {
 				severe = true;
+				g_kfas.down_cooldown = cfg->down_hold_frames * 4;
 				delta = clamp_t(u32,
 						(over_pm * cfg->up_gain) / 100,
 						65, 240);
+			} else if (isolated_tick) {
+				/*
+				 * Single isolated VSync edge tick (<= ~2x budget)
+				 * while smoothed EMA FPS is still locked: apply
+				 * a gentle protective bump without pinning perf
+				 * at 1000; a second consecutive miss escalates
+				 * immediately via !isolated_tick.
+				 */
+				g_kfas.down_cooldown = cfg->down_hold_frames;
+				delta = clamp_t(u32,
+						(over_pm * cfg->up_gain) / 260,
+						10, 36);
 			} else {
+				g_kfas.down_cooldown = cfg->down_hold_frames * 3;
 				delta = clamp_t(u32,
 						(over_pm * cfg->up_gain) / 130,
 						18, 110);

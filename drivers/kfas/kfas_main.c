@@ -82,7 +82,7 @@ static void kfas_init_default_profiles(void)
 		.down_hold_frames = 12,
 		.little_floor_khz = 844800,
 		.temp_thresh_mc = 82000,
-		.worker_uclamp_max = 220,
+		.worker_uclamp_max = 280,
 		.crit_uclamp_min = 290,
 		.prime_enable = false,
 	};
@@ -94,7 +94,7 @@ static void kfas_init_default_profiles(void)
 		.down_hold_frames = 16,
 		.little_floor_khz = 1017600,
 		.temp_thresh_mc = 0,
-		.worker_uclamp_max = 260,
+		.worker_uclamp_max = 350,
 		.crit_uclamp_min = 320,
 		.prime_enable = true,
 	};
@@ -106,7 +106,7 @@ static void kfas_init_default_profiles(void)
 		.down_hold_frames = 24,
 		.little_floor_khz = 1228800,
 		.temp_thresh_mc = 95000,
-		.worker_uclamp_max = 320,
+		.worker_uclamp_max = 420,
 		.crit_uclamp_min = 400,
 		.prime_enable = true,
 	};
@@ -118,7 +118,7 @@ static void kfas_init_default_profiles(void)
 		.down_hold_frames = 36,
 		.little_floor_khz = 1344000,
 		.temp_thresh_mc = 95000,
-		.worker_uclamp_max = 380,
+		.worker_uclamp_max = 480,
 		.crit_uclamp_min = 500,
 		.prime_enable = true,
 	};
@@ -191,7 +191,7 @@ static void kfas_exit_work_fn(struct work_struct *work)
 
 	mutex_lock(&g_kfas.session_mutex);
 	if (g_kfas.session_active && g_kfas.target_pid == exited) {
-		pr_info("kfas: target pid %d exited, auto-detaching\n", exited);
+		pr_debug("kfas: target pid %d exited, auto-detaching\n", exited);
 		kfas_session_stop_locked();
 	}
 	mutex_unlock(&g_kfas.session_mutex);

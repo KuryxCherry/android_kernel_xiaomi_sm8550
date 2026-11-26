@@ -359,8 +359,8 @@ int kfas_uprobe_attach_locked(struct task_struct *leader)
 	}
 
 	g_kfas.nr_probes = idx;
-	pr_info("kfas: attached %u uprobes to pid %d (%s)\n",
-		idx, leader->tgid, g_kfas.lib_path);
+	pr_debug("kfas: attached %u uprobes to pid %d (%s)\n",
+		 idx, leader->tgid, g_kfas.lib_path);
 	return 0;
 
 err_rollback:
