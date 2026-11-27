@@ -106,6 +106,7 @@ jobs:
                     while IFS= read -r sub; do
                       [ -n "${sub}" ] && git rm -rf --ignore-unmatch -- "${sub}"
                     done <<< "${SUBS}"
+                    git rm -rf --ignore-unmatch -- "${P}~HEAD"
                     rm -rf -- "${P}" "${P}~HEAD"
                     git checkout HEAD -- "${P}"
                     git add "${P}"
