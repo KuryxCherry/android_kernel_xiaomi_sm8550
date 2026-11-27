@@ -396,13 +396,19 @@ static void kfas_apply_perf_level_locked(const struct kfas_mode_cfg *cfg,
 			max_khz = kfas_pick_opp(cl, scaled, 0);
 		} else if (i == 0) {
 			/*
-			 * Little cluster (A510): stay near efficiency sweet
-			 * spot (900..1670 MHz) while keeping a safe floor for
-			 * SurfaceFlinger / audio / net tasks.
+			 * Little cluster (A510): cap routine operation near the
+			 * A510 efficiency knee across all 4 modes so high-volt
+			 * tail OPPs (1.67-2.01 GHz) are avoided and busy tasks
+			 * can spill cleanly onto powered mid cores (CPU4-6).
 			 */
-			scaled = 280 + (perf * 520) / 1000;
+			u32 little_cap = (g_kfas.mode == KFAS_MODE_POWERSAVE) ? 540 :
+					 (g_kfas.mode == KFAS_MODE_BALANCE) ? 660 :
+					 (g_kfas.mode == KFAS_MODE_PERFORMANCE) ? 730 : 800;
+
+			scaled = 240 + (perf * (little_cap - 240)) / 1000;
 			if (severe_spike)
-				scaled = min_t(u32, 920, scaled + 120);
+				scaled = min_t(u32, little_cap + 120,
+					       scaled + 100);
 			max_khz = kfas_pick_opp(cl, scaled,
 						cfg->little_floor_khz);
 		} else if (i == g_kfas.nr_clusters - 1 &&
@@ -459,7 +465,7 @@ void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s)
 	const struct kfas_mode_cfg *cfg = &g_kfas.mode_cfg[g_kfas.mode];
 	struct kfas_gpu_snap gpu;
 	u64 budget_ns, tol_ns, jank_ns, exec_ceil_ns, exec_hold_ns, ema_exec_ns;
-	u32 frame_us, exec_us, delay_us, dq_us;
+	u32 frame_us, exec_us, delay_us, dq_us, prev_ema_frame_us;
 	u32 fps_x10, temp_mc, margin, tol_pct, ema_tol_pct, ema_jank_us;
 	u32 exec_ceil_pct;
 	enum kfas_bottleneck bn = KFAS_BN_OK;
@@ -479,12 +485,14 @@ void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s)
 	exec_us = (u32)div_u64(s->exec_ns, 1000U);
 	delay_us = (u32)div_u64(s->delay_ns, 1000U);
 	dq_us = (u32)div_u64(s->dq_wait_ns, 1000U);
+	prev_ema_frame_us = g_kfas.ema_frame_us;
 
 	if (g_kfas.ema_frame_us == 0) {
 		g_kfas.ema_frame_us = frame_us;
 		g_kfas.ema_exec_us = exec_us;
 		g_kfas.ema_delay_us = delay_us;
 		g_kfas.ema_dq_wait_us = dq_us;
+		prev_ema_frame_us = frame_us;
 	} else {
 		g_kfas.ema_frame_us = (g_kfas.ema_frame_us * 7 + frame_us) / 8;
 		g_kfas.ema_exec_us = (g_kfas.ema_exec_us * 7 + exec_us) / 8;
@@ -526,9 +534,14 @@ void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s)
 	exec_hold_ns = div_u64(budget_ns * (exec_ceil_pct - 10U), 100U);
 	ema_exec_ns = (u64)g_kfas.ema_exec_us * 1000ULL;
 
+	/*
+	 * Require the current frame to also exceed budget + half-tolerance
+	 * before triggering sustained EMA jank, so a single 16ms VSync tick
+	 * cannot chain-react across the next 4-5 normal 8.35ms frames.
+	 */
 	frame_missed = (s->frame_ns > jank_ns) ||
 		       (g_kfas.ema_frame_us > ema_jank_us &&
-			s->frame_ns > budget_ns);
+			s->frame_ns > budget_ns + (tol_ns >> 1));
 	exec_high = (ema_exec_ns > exec_ceil_ns);
 	exec_hold = (ema_exec_ns >= exec_hold_ns);
 
@@ -597,7 +610,7 @@ void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s)
 						 div64_u64(over_ns * 1000ULL,
 							   budget_ns));
 			bool isolated_tick = (g_kfas.jank_streak == 0 &&
-					      g_kfas.ema_frame_us <= ema_jank_us &&
+					      prev_ema_frame_us <= ema_jank_us &&
 					      s->frame_ns <=
 					      div_u64(budget_ns * 215, 100U));
 
