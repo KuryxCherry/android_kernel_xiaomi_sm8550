@@ -16,6 +16,11 @@ on:
         required: false
         default: ""
         type: string
+      prefer_ours_paths:
+        description: "仅对指定冲突文件路径保留本地版本（空格分隔，支持符号链接目录冲突，默认留空严格中止）"
+        required: false
+        default: ""
+        type: string
       dry_run:
         description: "仅演练合并检测冲突，不推送"
         required: false
@@ -44,6 +49,7 @@ jobs:
         env:
           UPSTREAM_SOURCE: ${{ inputs.upstream_source }}
           PREFER_THEIRS: ${{ inputs.prefer_theirs_paths }}
+          PREFER_OURS: ${{ inputs.prefer_ours_paths }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
@@ -84,7 +90,32 @@ jobs:
                   echo "[RESOLVE] Taking upstream version for whitelisted conflict: ${P}"
                   git checkout --theirs -- "${P}"
                   git add "${P}"
-                  RESOLVED+=("${P}")
+                  RESOLVED+=("theirs:${P}")
+                fi
+              done
+            fi
+
+            if [ -n "${PREFER_OURS}" ]; then
+              read -r -a PATH_LIST <<< "${PREFER_OURS}"
+              for P in "${PATH_LIST[@]}"; do
+                HEAD_MODE=$(git ls-tree HEAD -- "${P}" | awk '{print $1}')
+                if [ "${HEAD_MODE}" = "120000" ]; then
+                  SUBS=$(git ls-files -u -- "${P}/" | awk '{print $4}' | sort -u || true)
+                  if [ -n "${SUBS}" ] || git diff --name-only --diff-filter=U | grep -qxF "${P}"; then
+                    echo "[RESOLVE] Preserving HEAD symlink for whitelisted file/dir conflict: ${P}"
+                    while IFS= read -r sub; do
+                      [ -n "${sub}" ] && git rm -rf --ignore-unmatch -- "${sub}"
+                    done <<< "${SUBS}"
+                    rm -rf -- "${P}" "${P}~HEAD"
+                    git checkout HEAD -- "${P}"
+                    git add "${P}"
+                    RESOLVED+=("ours-symlink:${P}")
+                  fi
+                elif git diff --name-only --diff-filter=U | grep -qxF "${P}"; then
+                  echo "[RESOLVE] Keeping HEAD version for whitelisted conflict: ${P}"
+                  git checkout --ours -- "${P}"
+                  git add "${P}"
+                  RESOLVED+=("ours:${P}")
                 fi
               done
             fi
@@ -103,7 +134,7 @@ jobs:
                 echo "${REMAINING}"
                 echo '```'
               } >> "${GITHUB_STEP_SUMMARY}"
-              git merge --abort
+              git merge --abort || git reset --hard HEAD
               exit 1
             fi
 
