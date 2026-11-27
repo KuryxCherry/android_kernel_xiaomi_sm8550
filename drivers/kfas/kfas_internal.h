@@ -23,7 +23,7 @@
 #include <linux/uprobes.h>
 #include <linux/workqueue.h>
 
-#define KFAS_VERSION		"1.0.4"
+#define KFAS_VERSION		"1.1.0"
 
 #define KFAS_MAX_CLUSTERS	4
 #define KFAS_MAX_OPPS		64
@@ -38,6 +38,9 @@
 #define KFAS_MAX_MANAGED_TIDS	96
 #define KFAS_MAX_SCAN_THREADS	128
 #define KFAS_MAX_CRITICAL	3
+#define KFAS_DAILY_MAX_MANAGED	128
+#define KFAS_DAILY_MAX_SCAN	192
+#define KFAS_DAILY_MAX_CRIT	3
 #define KFAS_MAX_VIP_COMMS	8
 #define KFAS_VIP_COMM_LEN	16
 #define KFAS_MAX_PATH_LEN	256
@@ -174,6 +177,7 @@ struct kfas_state {
 	struct work_struct exit_work;
 	struct delayed_work idle_work;
 	struct delayed_work place_work;
+	struct delayed_work daily_work;
 
 	/* Master configuration */
 	bool enabled;
@@ -181,6 +185,7 @@ struct kfas_state {
 	bool placement_enable;
 	bool contain_workers;
 	bool unpause_big;
+	bool daily_enable;
 	struct kfas_mode_cfg mode_cfg[KFAS_MODE_COUNT];
 
 	/* Probe specification (configured by userspace once) */
@@ -258,6 +263,16 @@ struct kfas_state {
 	char vip_comms[KFAS_MAX_VIP_COMMS][KFAS_VIP_COMM_LEN];
 	u32 nr_vip_comms;
 
+	/* Daily non-game app thread assist */
+	bool daily_active;
+	pid_t daily_pid;
+	atomic_t exiting_daily_pid;
+	u32 daily_pass;
+	u32 daily_nr_crit;
+	u32 daily_nr_trash;
+	struct kfas_managed_tid daily_managed[KFAS_DAILY_MAX_MANAGED];
+	u32 nr_daily_managed;
+
 	/* GPU devfreq telemetry (protected by gpu_lock) */
 	raw_spinlock_t gpu_lock;
 	struct kfas_gpu_snap gpu;
@@ -296,6 +311,13 @@ void kfas_place_idle_relax_locked(void);
 void kfas_place_boost_urgent_locked(void);
 void kfas_place_work_fn(struct work_struct *work);
 ssize_t kfas_place_format_threads(char *buf, size_t size);
+
+/* kfas_daily.c */
+void kfas_daily_init(void);
+int kfas_daily_start_locked(pid_t pid);
+void kfas_daily_stop_locked(void);
+void kfas_daily_work_fn(struct work_struct *work);
+ssize_t kfas_daily_format_threads(char *buf, size_t size);
 
 /* kfas_gpu.c */
 void kfas_gpu_init(void);

@@ -74,6 +74,7 @@ static void kfas_init_default_profiles(void)
 	g_kfas.placement_enable = true;
 	g_kfas.contain_workers = true;
 	g_kfas.unpause_big = true;
+	g_kfas.daily_enable = true;
 
 	g_kfas.mode_cfg[KFAS_MODE_POWERSAVE] = (struct kfas_mode_cfg){
 		.margin_pct = 4,
@@ -185,14 +186,21 @@ static void kfas_idle_work_fn(struct work_struct *work)
 static void kfas_exit_work_fn(struct work_struct *work)
 {
 	pid_t exited = atomic_xchg(&g_kfas.exiting_pid, 0);
+	pid_t exited_daily = atomic_xchg(&g_kfas.exiting_daily_pid, 0);
 
-	if (exited <= 0)
+	if (exited <= 0 && exited_daily <= 0)
 		return;
 
 	mutex_lock(&g_kfas.session_mutex);
-	if (g_kfas.session_active && g_kfas.target_pid == exited) {
+	if (exited > 0 && g_kfas.session_active && g_kfas.target_pid == exited) {
 		pr_debug("kfas: target pid %d exited, auto-detaching\n", exited);
 		kfas_session_stop_locked();
+	}
+	if (exited_daily > 0 && g_kfas.daily_active &&
+	    READ_ONCE(g_kfas.daily_pid) == exited_daily) {
+		pr_debug("kfas: daily pid %d exited, auto-detaching\n",
+			 exited_daily);
+		kfas_daily_stop_locked();
 	}
 	mutex_unlock(&g_kfas.session_mutex);
 }
@@ -208,9 +216,16 @@ void kfas_schedule_exit_cleanup(pid_t tgid)
 static void kfas_tp_process_exit(void *data, struct task_struct *p)
 {
 	pid_t tgid = READ_ONCE(g_kfas.target_pid);
+	pid_t dtgid = READ_ONCE(g_kfas.daily_pid);
 
-	if (tgid > 0 && p->pid == tgid && thread_group_leader(p))
+	if (!thread_group_leader(p))
+		return;
+	if (tgid > 0 && p->pid == tgid) {
 		kfas_schedule_exit_cleanup(tgid);
+	} else if (dtgid > 0 && p->pid == dtgid && g_kfas.wq) {
+		atomic_set(&g_kfas.exiting_daily_pid, dtgid);
+		queue_work(g_kfas.wq, &g_kfas.exit_work);
+	}
 }
 
 int kfas_session_start_locked(pid_t pid, const u32 *fps_list, u32 nr_fps)
@@ -220,6 +235,9 @@ int kfas_session_start_locked(pid_t pid, const u32 *fps_list, u32 nr_fps)
 
 	if (!g_kfas.enabled)
 		return -EPERM;
+
+	/* Always yield daily app assist cleanly before starting a game session */
+	kfas_daily_stop_locked();
 
 	if (g_kfas.session_active)
 		kfas_session_stop_locked();
@@ -317,9 +335,11 @@ static int __init kfas_init(void)
 	INIT_WORK(&g_kfas.exit_work, kfas_exit_work_fn);
 	INIT_DELAYED_WORK(&g_kfas.idle_work, kfas_idle_work_fn);
 	INIT_DELAYED_WORK(&g_kfas.place_work, kfas_place_work_fn);
+	INIT_DELAYED_WORK(&g_kfas.daily_work, kfas_daily_work_fn);
 
 	kfas_gpu_init();
 	kfas_place_init();
+	kfas_daily_init();
 
 	ret = register_trace_sched_process_exit(kfas_tp_process_exit, NULL);
 	if (ret)

@@ -37,8 +37,11 @@ static ssize_t enable_store(struct kobject *kobj, struct kobj_attribute *attr,
 
 	mutex_lock(&g_kfas.session_mutex);
 	g_kfas.enabled = val;
-	if (!val && g_kfas.session_active)
-		kfas_session_stop_locked();
+	if (!val) {
+		if (g_kfas.session_active)
+			kfas_session_stop_locked();
+		kfas_daily_stop_locked();
+	}
 	mutex_unlock(&g_kfas.session_mutex);
 	return count;
 }
@@ -345,6 +348,62 @@ static ssize_t unpause_big_store(struct kobject *kobj,
 	return count;
 }
 
+static ssize_t daily_enable_show(struct kobject *kobj,
+				 struct kobj_attribute *attr, char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%d\n",
+			 READ_ONCE(g_kfas.daily_enable) ? 1 : 0);
+}
+
+static ssize_t daily_enable_store(struct kobject *kobj,
+				  struct kobj_attribute *attr,
+				  const char *buf, size_t count)
+{
+	bool val;
+
+	if (kstrtobool(buf, &val))
+		return -EINVAL;
+
+	mutex_lock(&g_kfas.session_mutex);
+	WRITE_ONCE(g_kfas.daily_enable, val);
+	if (!val)
+		kfas_daily_stop_locked();
+	mutex_unlock(&g_kfas.session_mutex);
+	return count;
+}
+
+static ssize_t daily_pid_show(struct kobject *kobj,
+			      struct kobj_attribute *attr, char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%d\n", READ_ONCE(g_kfas.daily_pid));
+}
+
+static ssize_t daily_pid_store(struct kobject *kobj,
+			       struct kobj_attribute *attr,
+			       const char *buf, size_t count)
+{
+	char tmp[24];
+	int pid_val;
+	int ret = 0;
+
+	if (count == 0 || count >= sizeof(tmp))
+		return -EINVAL;
+
+	memcpy(tmp, buf, count);
+	tmp[count] = '\0';
+
+	if (kstrtoint(strim(tmp), 10, &pid_val) || pid_val < 0)
+		return -EINVAL;
+
+	mutex_lock(&g_kfas.session_mutex);
+	if (pid_val == 0)
+		kfas_daily_stop_locked();
+	else
+		ret = kfas_daily_start_locked((pid_t)pid_val);
+	mutex_unlock(&g_kfas.session_mutex);
+	return ret ? ret : (ssize_t)count;
+}
+
 static ssize_t vip_comms_show(struct kobject *kobj,
 			      struct kobj_attribute *attr, char *buf)
 {
@@ -514,6 +573,12 @@ static ssize_t status_show(struct kobject *kobj, struct kobj_attribute *attr,
 				 cl->cur_max_khz == FREQ_QOS_MAX_DEFAULT_VALUE ?
 					0 : cl->cur_max_khz);
 	}
+	len += scnprintf(buf + len, PAGE_SIZE - len,
+			 "daily: daily_enabled=%d daily_active=%d daily_pid=%d daily_crit=%u daily_trash=%u\n",
+			 READ_ONCE(g_kfas.daily_enable) ? 1 : 0,
+			 g_kfas.daily_active ? 1 : 0,
+			 READ_ONCE(g_kfas.daily_pid),
+			 g_kfas.daily_nr_crit, g_kfas.daily_nr_trash);
 	mutex_unlock(&g_kfas.ctrl_mutex);
 	return len;
 }
@@ -521,6 +586,8 @@ static ssize_t status_show(struct kobject *kobj, struct kobj_attribute *attr,
 static ssize_t threads_show(struct kobject *kobj, struct kobj_attribute *attr,
 			    char *buf)
 {
+	if (!READ_ONCE(g_kfas.session_active) && READ_ONCE(g_kfas.daily_active))
+		return kfas_daily_format_threads(buf, PAGE_SIZE);
 	return kfas_place_format_threads(buf, PAGE_SIZE);
 }
 
@@ -533,6 +600,8 @@ static struct kobj_attribute kfas_attr_placement_enable =
 static struct kobj_attribute kfas_attr_contain_workers =
 	__ATTR_RW(contain_workers);
 static struct kobj_attribute kfas_attr_unpause_big = __ATTR_RW(unpause_big);
+static struct kobj_attribute kfas_attr_daily_enable = __ATTR_RW(daily_enable);
+static struct kobj_attribute kfas_attr_daily_pid = __ATTR_RW(daily_pid);
 static struct kobj_attribute kfas_attr_vip_comms = __ATTR_RW(vip_comms);
 static struct kobj_attribute kfas_attr_tuning = __ATTR_RW(tuning);
 static struct kobj_attribute kfas_attr_status = __ATTR_RO(status);
@@ -546,6 +615,8 @@ static struct attribute *kfas_attrs[] = {
 	&kfas_attr_placement_enable.attr,
 	&kfas_attr_contain_workers.attr,
 	&kfas_attr_unpause_big.attr,
+	&kfas_attr_daily_enable.attr,
+	&kfas_attr_daily_pid.attr,
 	&kfas_attr_vip_comms.attr,
 	&kfas_attr_tuning.attr,
 	&kfas_attr_status.attr,
