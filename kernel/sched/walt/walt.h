@@ -543,11 +543,32 @@ static inline bool task_placement_boost_enabled(struct task_struct *p)
 	return task_sched_boost(p);
 }
 
+#if IS_ENABLED(CONFIG_KFAS) && defined(CONFIG_UCLAMP_TASK)
+/*
+ * Identify threads explicitly contained by KFAS (per-task uclamp_max < 1024
+ * with uclamp_min == 0) so cgroup-wide top-app boost hints (cpu.uclamp.min /
+ * sched_boost / latency_sensitive) do not evict low-priority workers onto
+ * mid/gold cores during touch or app-launch bursts.
+ */
+static inline bool kfas_is_contained_task(struct task_struct *p)
+{
+	return p->uclamp_req[UCLAMP_MAX].user_defined &&
+	       p->uclamp_req[UCLAMP_MIN].value == 0 &&
+	       p->uclamp_req[UCLAMP_MAX].value < SCHED_CAPACITY_SCALE;
+}
+#else
+static inline bool kfas_is_contained_task(struct task_struct *p)
+{
+	return false;
+}
+#endif
+
 static inline enum sched_boost_policy task_boost_policy(struct task_struct *p)
 {
 	enum sched_boost_policy policy;
 
-	if (likely(boost_policy == SCHED_BOOST_NONE))
+	if (likely(boost_policy == SCHED_BOOST_NONE) ||
+	    kfas_is_contained_task(p))
 		return SCHED_BOOST_NONE;
 
 	policy = task_sched_boost(p) ? boost_policy : SCHED_BOOST_NONE;
@@ -567,6 +588,9 @@ static inline enum sched_boost_policy task_boost_policy(struct task_struct *p)
 
 static inline bool walt_uclamp_boosted(struct task_struct *p)
 {
+	if (kfas_is_contained_task(p))
+		return false;
+
 	return ((uclamp_eff_value(p, UCLAMP_MIN) > 0) &&
 			(task_util(p) > sysctl_sched_min_task_util_for_uclamp));
 }
@@ -645,6 +669,10 @@ static inline unsigned long task_util_est(struct task_struct *p)
 #ifdef CONFIG_UCLAMP_TASK
 static inline unsigned long uclamp_task_util(struct task_struct *p)
 {
+	if (kfas_is_contained_task(p))
+		return min_t(unsigned long, task_util_est(p),
+			     (unsigned long)p->uclamp_req[UCLAMP_MAX].value);
+
 	return clamp(task_util_est(p),
 		     uclamp_eff_value(p, UCLAMP_MIN),
 		     uclamp_eff_value(p, UCLAMP_MAX));

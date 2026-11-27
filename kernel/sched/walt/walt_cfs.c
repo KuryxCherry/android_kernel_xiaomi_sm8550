@@ -1006,7 +1006,8 @@ int walt_find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
 
 
 	rcu_read_lock();
-	need_idle |= uclamp_latency_sensitive(p);
+	if (!kfas_is_contained_task(p))
+		need_idle |= uclamp_latency_sensitive(p);
 
 	fbt_env.fastpath = 0;
 	fbt_env.need_idle = need_idle;

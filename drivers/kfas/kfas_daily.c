@@ -12,9 +12,10 @@
  *     -> softly contained to little cores via uclamp_max (with RESET_ON_FORK)
  *        while protecting Binder, Audio, MediaCodec, Camera, and ART GC.
  *
- * Runs at most two lightweight passes per foreground app switch (immediate +
- * 1.5s cold-start catch-up), then sleeps at 0% CPU until app exit, screen off,
- * or game takeover, cleanly restoring every modified thread.
+ * Runs two lightweight passes per foreground app switch (immediate + 1.5s
+ * cold-start catch-up) plus a single 4s RCU verification pass if a Tier 0
+ * thread exited or RenderThread was absent, then sleeps at 0% CPU until app
+ * exit, screen off, or game takeover, cleanly restoring every modified thread.
  */
 #include <linux/cpumask.h>
 #include <linux/pid.h>
@@ -32,11 +33,13 @@
 #include "kfas_internal.h"
 
 #define KFAS_DAILY_CATCHUP_MS	1500
+#define KFAS_DAILY_VERIFY_MS	4000
 
 struct kfas_daily_scan_entry {
 	pid_t tid;
 	char comm[TASK_COMM_LEN];
 	u32 demand;
+	u64 exec_ns;
 	int policy;
 	int nice_val;
 	int cur_cpu;
@@ -146,6 +149,42 @@ static int kfas_daily_pick_ui_cpu(u32 slot, const cpumask_t *used)
 	return -1;
 }
 
+static bool kfas_daily_better_cand(const struct kfas_daily_scan_entry *cand,
+				   const struct kfas_daily_scan_entry *cur)
+{
+	if (cand->demand != cur->demand)
+		return cand->demand > cur->demand;
+	return cand->exec_ns > cur->exec_ns;
+}
+
+static bool kfas_daily_needs_verify_rescan_locked(void)
+{
+	bool has_rt = false;
+	u32 i;
+
+	for (i = 0; i < g_kfas.nr_daily_managed; i++) {
+		const struct kfas_managed_tid *m = &g_kfas.daily_managed[i];
+		struct task_struct *t;
+		bool alive = false;
+
+		if (m->tier != 0)
+			continue;
+
+		if (m->pid_ref) {
+			rcu_read_lock();
+			t = pid_task(m->pid_ref, PIDTYPE_PID);
+			if (t && READ_ONCE(t->__state) != TASK_DEAD)
+				alive = true;
+			rcu_read_unlock();
+		}
+		if (!alive)
+			return true;
+		if (kfas_has_prefix(m->comm, "RenderThread"))
+			has_rt = true;
+	}
+	return !has_rt;
+}
+
 static void kfas_daily_pass_locked(void)
 {
 	const struct kfas_walt_ops *ops = smp_load_acquire(&g_kfas.walt_ops);
@@ -154,6 +193,7 @@ static void kfas_daily_pass_locked(void)
 	u32 nr_scan = 0, nr_crit = 0, nr_trash = 0, nr_next = 0;
 	u32 i, j, ui_umin, trash_umax;
 	int crit_idx[KFAS_DAILY_MAX_CRIT];
+	int best_rt = -1, main_idx = -1;
 	cpumask_t used_cpus;
 	int boost_none;
 
@@ -170,8 +210,9 @@ static void kfas_daily_pass_locked(void)
 	ui_umin = (g_kfas.mode == KFAS_MODE_POWERSAVE) ? 180 :
 		  (g_kfas.mode == KFAS_MODE_BALANCE) ? 220 :
 		  (g_kfas.mode == KFAS_MODE_PERFORMANCE) ? 295 : 350;
-	trash_umax = (g_kfas.mode == KFAS_MODE_POWERSAVE) ? 200 :
-		     (g_kfas.mode == KFAS_MODE_BALANCE) ? 220 : 240;
+	/* Keep below SM8550 little-cluster downmigrate ceiling (~238) */
+	trash_umax = (g_kfas.mode == KFAS_MODE_POWERSAVE) ? 190 :
+		     (g_kfas.mode == KFAS_MODE_BALANCE) ? 210 : 230;
 
 	/* Phase 1: Snapshot thread group under RCU */
 	rcu_read_lock();
@@ -190,6 +231,7 @@ static void kfas_daily_pass_locked(void)
 			get_task_comm(e->comm, t);
 			e->demand = (ops && ops->get_task_demand_scaled) ?
 				    ops->get_task_demand_scaled(t) : 0;
+			e->exec_ns = READ_ONCE(t->se.sum_exec_runtime);
 			e->policy = t->policy;
 			e->nice_val = task_nice(t);
 			e->cur_cpu = task_cpu(t);
@@ -205,13 +247,36 @@ static void kfas_daily_pass_locked(void)
 	if (nr_scan == 0)
 		return;
 
-	/* Select up to 3 UI-critical threads (RenderThread -> Main -> WebView/Flutter) */
+	/*
+	 * Reserve the two Cortex-A715 cores for the single most active
+	 * RenderThread plus the Main UI thread so transient secondary
+	 * RenderThreads cannot push Main UI down onto Cortex-A710.
+	 */
 	for (i = 0; i < KFAS_DAILY_MAX_CRIT; i++)
 		crit_idx[i] = -1;
 
+	for (i = 0; i < nr_scan; i++) {
+		if (g_daily_scan[i].policy != SCHED_NORMAL &&
+		    g_daily_scan[i].policy != SCHED_BATCH)
+			continue;
+		if (g_daily_scan[i].ui_prio == 3) {
+			if (best_rt < 0 ||
+			    kfas_daily_better_cand(&g_daily_scan[i],
+						   &g_daily_scan[best_rt]))
+				best_rt = (int)i;
+		} else if (g_daily_scan[i].ui_prio == 2) {
+			main_idx = (int)i;
+		}
+	}
+
+	if (best_rt >= 0 && nr_crit < KFAS_DAILY_MAX_CRIT)
+		crit_idx[nr_crit++] = best_rt;
+	if (main_idx >= 0 && nr_crit < KFAS_DAILY_MAX_CRIT)
+		crit_idx[nr_crit++] = main_idx;
+
+	/* Fill remaining Tier 0 slot(s) with most active Flutter/WebView/aux UI */
 	while (nr_crit < KFAS_DAILY_MAX_CRIT) {
 		int best = -1;
-		u8 best_prio = 0;
 
 		for (i = 0; i < nr_scan; i++) {
 			bool dup = false;
@@ -229,10 +294,10 @@ static void kfas_daily_pass_locked(void)
 			}
 			if (dup)
 				continue;
-			if (g_daily_scan[i].ui_prio > best_prio) {
-				best_prio = g_daily_scan[i].ui_prio;
+			if (best < 0 ||
+			    kfas_daily_better_cand(&g_daily_scan[i],
+						   &g_daily_scan[best]))
 				best = (int)i;
-			}
 		}
 		if (best < 0)
 			break;
@@ -348,12 +413,25 @@ void kfas_daily_work_fn(struct work_struct *work)
 	mutex_lock(&g_kfas.ctrl_mutex);
 	if (g_kfas.daily_active && !g_kfas.session_active &&
 	    READ_ONCE(g_kfas.daily_enable)) {
-		kfas_daily_pass_locked();
-		g_kfas.daily_pass++;
-		/* Run one catch-up pass after 1.5s for cold-start threads, then stop */
-		if (g_kfas.daily_pass == 1) {
-			mod_delayed_work(g_kfas.wq, &g_kfas.daily_work,
-					 msecs_to_jiffies(KFAS_DAILY_CATCHUP_MS));
+		if (g_kfas.daily_pass < 2) {
+			kfas_daily_pass_locked();
+			g_kfas.daily_pass++;
+			/*
+			 * Pass 1 (+1.5s): catch cold-start threads.
+			 * Pass 2 (+4.0s): lightweight RCU verify; rescan only
+			 * if a Tier 0 thread exited or RenderThread was absent.
+			 */
+			if (g_kfas.daily_pass == 1) {
+				mod_delayed_work(g_kfas.wq, &g_kfas.daily_work,
+						 msecs_to_jiffies(KFAS_DAILY_CATCHUP_MS));
+			} else if (g_kfas.daily_pass == 2) {
+				mod_delayed_work(g_kfas.wq, &g_kfas.daily_work,
+						 msecs_to_jiffies(KFAS_DAILY_VERIFY_MS));
+			}
+		} else if (g_kfas.daily_pass == 2) {
+			if (kfas_daily_needs_verify_rescan_locked())
+				kfas_daily_pass_locked();
+			g_kfas.daily_pass++;
 		}
 	}
 	mutex_unlock(&g_kfas.ctrl_mutex);
@@ -421,6 +499,7 @@ void kfas_daily_init(void)
 
 ssize_t kfas_daily_format_threads(char *buf, size_t size)
 {
+	const struct kfas_walt_ops *ops = smp_load_acquire(&g_kfas.walt_ops);
 	ssize_t len = 0;
 	u32 i;
 
@@ -429,29 +508,37 @@ ssize_t kfas_daily_format_threads(char *buf, size_t size)
 			 "topo: prime=%d high_mid=%d low_mid=%d little=%d daily_pid=%d walt_bridge=%d\n",
 			 g_kfas.topo.prime_cpu, g_kfas.topo.nr_high_mid,
 			 g_kfas.topo.nr_low_mid, g_kfas.topo.nr_little,
-			 READ_ONCE(g_kfas.daily_pid),
-			 smp_load_acquire(&g_kfas.walt_ops) ? 1 : 0);
+			 READ_ONCE(g_kfas.daily_pid), ops ? 1 : 0);
 	len += scnprintf(buf + len, size - len,
 			 "tid\ttier\tassign\tactual\tdemand\texec_us\tuclamp\tcomm\n");
 
 	for (i = 0; i < g_kfas.nr_daily_managed && len < (ssize_t)size - 96; i++) {
 		const struct kfas_managed_tid *m = &g_kfas.daily_managed[i];
 		int live_cpu = m->actual_cpu;
+		u32 live_demand = m->demand;
+		bool alive = false;
 
 		if (m->pid_ref) {
 			struct task_struct *t;
 
 			rcu_read_lock();
 			t = pid_task(m->pid_ref, PIDTYPE_PID);
-			if (t)
+			if (t && READ_ONCE(t->__state) != TASK_DEAD) {
 				live_cpu = task_cpu(t);
+				if (ops && ops->get_task_demand_scaled)
+					live_demand =
+						ops->get_task_demand_scaled(t);
+				alive = true;
+			}
 			rcu_read_unlock();
 		}
+		if (!alive)
+			continue;
 
 		len += scnprintf(buf + len, size - len,
 				 "%d\tT%u\t%d\t%d\t%u\t%u\t%u..%u\t%s\n",
 				 m->tid, m->tier, m->assigned_cpu,
-				 live_cpu, m->demand, m->delta_exec_us,
+				 live_cpu, live_demand, m->delta_exec_us,
 				 m->uclamp_min, m->uclamp_max, m->comm);
 	}
 	mutex_unlock(&g_kfas.ctrl_mutex);
