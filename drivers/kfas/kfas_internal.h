@@ -24,7 +24,7 @@
 #include <linux/uprobes.h>
 #include <linux/workqueue.h>
 
-#define KFAS_VERSION		"1.1.2"
+#define KFAS_VERSION		"1.2.0"
 
 #define KFAS_MAX_CLUSTERS	4
 #define KFAS_MAX_OPPS		64
@@ -303,7 +303,6 @@ void kfas_uprobe_reset_state(void);
 
 /* kfas_freq.c */
 int kfas_freq_ensure_init_locked(void);
-void kfas_freq_cleanup(void);
 void kfas_freq_reset_session_locked(void);
 void kfas_freq_release_limits_locked(void);
 void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s);
@@ -316,6 +315,13 @@ void kfas_place_idle_relax_locked(void);
 void kfas_place_boost_urgent_locked(void);
 void kfas_place_work_fn(struct work_struct *work);
 ssize_t kfas_place_format_threads(char *buf, size_t size);
+struct task_struct *kfas_task_get_and_pid(pid_t tid, pid_t expected_tgid,
+					  struct pid **out_pid);
+const struct kfas_managed_tid *
+kfas_managed_find_prev(const struct kfas_managed_tid *arr, u32 nr, pid_t tid);
+bool kfas_task_apply_uclamp(struct task_struct *task, u32 umin, u32 umax,
+			    bool reset_on_fork);
+void kfas_managed_restore_entry_locked(struct kfas_managed_tid *m);
 
 /* kfas_daily.c */
 void kfas_daily_init(void);
@@ -331,6 +337,5 @@ void kfas_gpu_get_snapshot(struct kfas_gpu_snap *out);
 
 /* kfas_sysfs.c */
 int kfas_sysfs_init(void);
-void kfas_sysfs_exit(void);
 
 #endif /* _KFAS_INTERNAL_H */

@@ -193,25 +193,6 @@ int kfas_freq_ensure_init_locked(void)
 	return 0;
 }
 
-void kfas_freq_cleanup(void)
-{
-	u32 i;
-
-	if (!g_kfas.freq_inited)
-		return;
-
-	for (i = 0; i < g_kfas.nr_clusters; i++) {
-		struct kfas_cluster *cl = &g_kfas.clusters[i];
-
-		if (cl->qos_ready) {
-			freq_qos_remove_request(&cl->max_req);
-			freq_qos_remove_request(&cl->min_req);
-			cl->qos_ready = false;
-		}
-	}
-	g_kfas.freq_inited = false;
-}
-
 static void kfas_cluster_set_limits(struct kfas_cluster *cl,
 				    unsigned int min_khz,
 				    unsigned int max_khz)

@@ -1170,14 +1170,26 @@ walt_select_task_rq_fair(void *unused, struct task_struct *p, int prev_cpu,
 static void walt_binder_low_latency_set(void *unused, struct task_struct *task,
 					bool sync, struct binder_proc *proc)
 {
-	struct walt_task_struct *wts = (struct walt_task_struct *) task->android_vendor_data1;
+	struct walt_task_struct *wts;
+	bool kfas_sync = false;
 
-	if (unlikely(walt_disabled))
+	if (unlikely(walt_disabled || !task))
 		return;
-	if (task && ((task_in_related_thread_group(current) &&
-			task->group_leader->prio < MAX_RT_PRIO) ||
-			(current->group_leader->prio < MAX_RT_PRIO &&
-			task_in_related_thread_group(task))))
+
+	wts = (struct walt_task_struct *)task->android_vendor_data1;
+#if IS_ENABLED(CONFIG_KFAS)
+	if (sync) {
+		struct walt_task_struct *cur_wts =
+			(struct walt_task_struct *)current->android_vendor_data1;
+
+		kfas_sync = !!(cur_wts->low_latency & WALT_LOW_LATENCY_KFAS);
+	}
+#endif
+	if (kfas_sync ||
+	    (task_in_related_thread_group(current) &&
+	     task->group_leader->prio < MAX_RT_PRIO) ||
+	    (current->group_leader->prio < MAX_RT_PRIO &&
+	     task_in_related_thread_group(task)))
 		wts->low_latency |= WALT_LOW_LATENCY_BINDER;
 	else
 		/*

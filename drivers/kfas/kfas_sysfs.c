@@ -232,7 +232,7 @@ static int kfas_parse_offsets(char *arg, loff_t *dst, u32 max_cnt, u32 *out_cnt)
 
 /*
  * Format: "<lib_path> <q_off1[,q_off2]> [dq_off1[,dq_off2]|-]"
- * Example: "/system/lib64/libgui.so 0xf3fe4 0xf22d4"
+ * Example: "/system/lib64/libgui.so 0xf6ac0 0x10f678"
  */
 static ssize_t probes_store(struct kobject *kobj, struct kobj_attribute *attr,
 			    const char *buf, size_t count)
@@ -643,13 +643,4 @@ int kfas_sysfs_init(void)
 		g_kfas.kobj = NULL;
 	}
 	return ret;
-}
-
-void kfas_sysfs_exit(void)
-{
-	if (!g_kfas.kobj)
-		return;
-	sysfs_remove_group(g_kfas.kobj, &kfas_attr_group);
-	kobject_put(g_kfas.kobj);
-	g_kfas.kobj = NULL;
 }

@@ -6,11 +6,11 @@
  * Android apps without touching FreqQoS, uprobes, core_ctl, or cpusets:
  *   - Tier 0 (UI Critical): Main UI thread, RenderThread, Flutter/WebView UI
  *     -> routed via WALT PIPELINE_FASTPATH + MVP onto Cortex-A715 gold cores
- *        with a gentle uclamp_min just above little-cluster capacity.
- *   - Tier 2 (Background/Trash): Known telemetry/log/GC/ad-SDK threads and
- *     Android background-priority workers (nice >= 6) with low demand
- *     -> softly contained to little cores via uclamp_max so they cannot wake
- *        big/prime cores or preempt UI scrolling.
+ *        with a gentle mode-scaled uclamp_min and synchronous Binder inheritance.
+ *   - Tier 2 (Background/Trash): Known telemetry/log/ad-SDK threads and
+ *     Android background-priority workers (nice >= 8) with low demand
+ *     -> softly contained to little cores via uclamp_max (with RESET_ON_FORK)
+ *        while protecting Binder, Audio, MediaCodec, Camera, and ART GC.
  *
  * Runs at most two lightweight passes per foreground app switch (immediate +
  * 1.5s cold-start catch-up), then sleeps at 0% CPU until app exit, screen off,
@@ -111,94 +111,12 @@ static bool kfas_daily_is_trash(const char *comm)
 	return false;
 }
 
-static struct task_struct *kfas_daily_get_task(pid_t tid, pid_t expected_tgid,
-					       struct pid **out_pid)
-{
-	struct pid *pid;
-	struct task_struct *t = NULL;
-
-	*out_pid = NULL;
-	rcu_read_lock();
-	pid = find_pid_ns(tid, &init_pid_ns);
-	if (pid) {
-		t = pid_task(pid, PIDTYPE_PID);
-		if (t && pid_alive(t) && t->tgid == expected_tgid) {
-			get_task_struct(t);
-			*out_pid = get_pid(pid);
-		} else {
-			t = NULL;
-		}
-	}
-	rcu_read_unlock();
-	return t;
-}
-
-static const struct kfas_managed_tid *
-kfas_daily_find_prev_locked(pid_t tid)
-{
-	u32 i;
-
-	for (i = 0; i < g_kfas.nr_daily_managed; i++) {
-		if (g_kfas.daily_managed[i].tid == tid)
-			return &g_kfas.daily_managed[i];
-	}
-	return NULL;
-}
-
-static bool kfas_daily_set_uclamp(struct task_struct *task, u32 umin, u32 umax,
-				  bool reset_on_fork)
-{
-	struct sched_attr attr;
-
-	if (task->policy != SCHED_NORMAL && task->policy != SCHED_BATCH)
-		return false;
-
-	memset(&attr, 0, sizeof(attr));
-	attr.size = sizeof(attr);
-	attr.sched_policy = (u32)task->policy;
-	attr.sched_nice = task_nice(task);
-	attr.sched_flags = SCHED_FLAG_KEEP_ALL | SCHED_FLAG_UTIL_CLAMP |
-			   (reset_on_fork ? SCHED_FLAG_RESET_ON_FORK : 0);
-	attr.sched_util_min = min_t(u32, 1024, umin);
-	attr.sched_util_max = clamp_t(u32, umax, attr.sched_util_min, 1024);
-
-	return sched_setattr_nocheck(task, &attr) == 0;
-}
-
-static void kfas_daily_restore_entry_locked(struct kfas_managed_tid *m)
-{
-	const struct kfas_walt_ops *ops = smp_load_acquire(&g_kfas.walt_ops);
-	struct task_struct *task = NULL;
-
-	if (m->pid_ref) {
-		if (m->walt_pinned || m->uclamp_applied)
-			task = get_pid_task(m->pid_ref, PIDTYPE_PID);
-		if (task) {
-			if (m->walt_pinned && ops && ops->clear_task_placement)
-				ops->clear_task_placement(task);
-			if (m->uclamp_applied)
-				kfas_daily_set_uclamp(task, 0, 1024,
-						      m->orig_reset_on_fork);
-			put_task_struct(task);
-		}
-		put_pid(m->pid_ref);
-		m->pid_ref = NULL;
-	}
-
-	m->walt_pinned = false;
-	m->uclamp_applied = false;
-	m->orig_reset_on_fork = false;
-	m->assigned_cpu = -1;
-	m->uclamp_min = 0;
-	m->uclamp_max = 1024;
-}
-
 static void kfas_daily_restore_all_locked(void)
 {
 	u32 i;
 
 	for (i = 0; i < g_kfas.nr_daily_managed; i++)
-		kfas_daily_restore_entry_locked(&g_kfas.daily_managed[i]);
+		kfas_managed_restore_entry_locked(&g_kfas.daily_managed[i]);
 	g_kfas.nr_daily_managed = 0;
 	g_kfas.daily_nr_crit = 0;
 	g_kfas.daily_nr_trash = 0;
@@ -347,10 +265,12 @@ static void kfas_daily_pass_locked(void)
 		m->uclamp_min = ui_umin;
 		m->uclamp_max = 1024;
 
-		task = kfas_daily_get_task(e->tid, tgid, &pid_ref);
+		task = kfas_task_get_and_pid(e->tid, tgid, &pid_ref);
 		if (task) {
 			m->pid_ref = pid_ref;
-			prev = kfas_daily_find_prev_locked(e->tid);
+			prev = kfas_managed_find_prev(g_kfas.daily_managed,
+						      g_kfas.nr_daily_managed,
+						      e->tid);
 			m->orig_reset_on_fork =
 				(prev && prev->pid_ref == pid_ref &&
 				 prev->uclamp_applied) ?
@@ -360,7 +280,7 @@ static void kfas_daily_pass_locked(void)
 			    ops->set_task_placement(task, tgt_cpu, true,
 						    boost_none, 0) == 0)
 				m->walt_pinned = true;
-			if (kfas_daily_set_uclamp(task, ui_umin, 1024, true))
+			if (kfas_task_apply_uclamp(task, ui_umin, 1024, true))
 				m->uclamp_applied = true;
 			put_task_struct(task);
 		}
@@ -393,16 +313,18 @@ static void kfas_daily_pass_locked(void)
 		m->uclamp_min = 0;
 		m->uclamp_max = trash_umax;
 
-		task = kfas_daily_get_task(e->tid, tgid, &pid_ref);
+		task = kfas_task_get_and_pid(e->tid, tgid, &pid_ref);
 		if (task) {
 			m->pid_ref = pid_ref;
-			prev = kfas_daily_find_prev_locked(e->tid);
+			prev = kfas_managed_find_prev(g_kfas.daily_managed,
+						      g_kfas.nr_daily_managed,
+						      e->tid);
 			m->orig_reset_on_fork =
 				(prev && prev->pid_ref == pid_ref &&
 				 prev->uclamp_applied) ?
 				prev->orig_reset_on_fork :
 				!!task->sched_reset_on_fork;
-			if (kfas_daily_set_uclamp(task, 0, trash_umax, true))
+			if (kfas_task_apply_uclamp(task, 0, trash_umax, true))
 				m->uclamp_applied = true;
 			put_task_struct(task);
 		}
@@ -439,7 +361,7 @@ static void kfas_daily_pass_locked(void)
 			}
 		}
 		if (!kept)
-			kfas_daily_restore_entry_locked(old);
+			kfas_managed_restore_entry_locked(old);
 	}
 
 	memcpy(g_kfas.daily_managed, g_daily_next,
