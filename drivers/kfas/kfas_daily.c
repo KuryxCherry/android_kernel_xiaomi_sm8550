@@ -18,6 +18,7 @@
  */
 #include <linux/cpumask.h>
 #include <linux/pid.h>
+#include <linux/pid_namespace.h>
 #include <linux/rcupdate.h>
 #include <linux/sched.h>
 #include <linux/sched/signal.h>
@@ -78,6 +79,7 @@ static bool kfas_daily_is_protected(const char *comm)
 		"Camera", "GLThread", "Choreographer", "Animator",
 		"AsyncLayout", "CrGpuMain", "Jit thread pool",
 		"ThreadPoolForeg", "FMOD",
+		"HeapTaskDaemon", "Finalizer", "ReferenceQueue",
 	};
 	u32 i;
 
@@ -95,8 +97,7 @@ static bool kfas_daily_is_trash(const char *comm)
 		"ALog", "TLog", "ELog", "slog", "mars::xlog",
 		"Beacon", "beacon", "Bugly", "Crash", "Stat", "Analytics",
 		"Metric", "Report", "Track", "Trace", "perfetto", "Perfetto",
-		"Profile Saver", "HeapTaskDaemon", "Finalizer",
-		"ReferenceQueue", "Cleanup", "Garbage",
+		"Profile Saver", "Cleanup", "Garbage",
 		"mbridge", "pangle", "gdt", "ksad", "tt_",
 		"APM", "apm", "Matrix", "matrix",
 		"Watchdog", "watchdog", "qm-thread",
@@ -110,19 +111,42 @@ static bool kfas_daily_is_trash(const char *comm)
 	return false;
 }
 
-static struct task_struct *kfas_daily_get_task(pid_t tid)
+static struct task_struct *kfas_daily_get_task(pid_t tid, pid_t expected_tgid,
+					       struct pid **out_pid)
 {
-	struct task_struct *t;
+	struct pid *pid;
+	struct task_struct *t = NULL;
 
+	*out_pid = NULL;
 	rcu_read_lock();
-	t = pid_task(find_vpid(tid), PIDTYPE_PID);
-	if (t)
-		get_task_struct(t);
+	pid = find_pid_ns(tid, &init_pid_ns);
+	if (pid) {
+		t = pid_task(pid, PIDTYPE_PID);
+		if (t && pid_alive(t) && t->tgid == expected_tgid) {
+			get_task_struct(t);
+			*out_pid = get_pid(pid);
+		} else {
+			t = NULL;
+		}
+	}
 	rcu_read_unlock();
 	return t;
 }
 
-static bool kfas_daily_set_uclamp(struct task_struct *task, u32 umin, u32 umax)
+static const struct kfas_managed_tid *
+kfas_daily_find_prev_locked(pid_t tid)
+{
+	u32 i;
+
+	for (i = 0; i < g_kfas.nr_daily_managed; i++) {
+		if (g_kfas.daily_managed[i].tid == tid)
+			return &g_kfas.daily_managed[i];
+	}
+	return NULL;
+}
+
+static bool kfas_daily_set_uclamp(struct task_struct *task, u32 umin, u32 umax,
+				  bool reset_on_fork)
 {
 	struct sched_attr attr;
 
@@ -133,7 +157,8 @@ static bool kfas_daily_set_uclamp(struct task_struct *task, u32 umin, u32 umax)
 	attr.size = sizeof(attr);
 	attr.sched_policy = (u32)task->policy;
 	attr.sched_nice = task_nice(task);
-	attr.sched_flags = SCHED_FLAG_KEEP_ALL | SCHED_FLAG_UTIL_CLAMP;
+	attr.sched_flags = SCHED_FLAG_KEEP_ALL | SCHED_FLAG_UTIL_CLAMP |
+			   (reset_on_fork ? SCHED_FLAG_RESET_ON_FORK : 0);
 	attr.sched_util_min = min_t(u32, 1024, umin);
 	attr.sched_util_max = clamp_t(u32, umax, attr.sched_util_min, 1024);
 
@@ -143,22 +168,26 @@ static bool kfas_daily_set_uclamp(struct task_struct *task, u32 umin, u32 umax)
 static void kfas_daily_restore_entry_locked(struct kfas_managed_tid *m)
 {
 	const struct kfas_walt_ops *ops = smp_load_acquire(&g_kfas.walt_ops);
-	struct task_struct *task;
+	struct task_struct *task = NULL;
 
-	if (!m->tid || (!m->walt_pinned && !m->uclamp_applied))
-		return;
-
-	task = kfas_daily_get_task(m->tid);
-	if (task) {
-		if (m->walt_pinned && ops && ops->clear_task_placement)
-			ops->clear_task_placement(task);
-		if (m->uclamp_applied)
-			kfas_daily_set_uclamp(task, 0, 1024);
-		put_task_struct(task);
+	if (m->pid_ref) {
+		if (m->walt_pinned || m->uclamp_applied)
+			task = get_pid_task(m->pid_ref, PIDTYPE_PID);
+		if (task) {
+			if (m->walt_pinned && ops && ops->clear_task_placement)
+				ops->clear_task_placement(task);
+			if (m->uclamp_applied)
+				kfas_daily_set_uclamp(task, 0, 1024,
+						      m->orig_reset_on_fork);
+			put_task_struct(task);
+		}
+		put_pid(m->pid_ref);
+		m->pid_ref = NULL;
 	}
 
 	m->walt_pinned = false;
 	m->uclamp_applied = false;
+	m->orig_reset_on_fork = false;
 	m->assigned_cpu = -1;
 	m->uclamp_min = 0;
 	m->uclamp_max = 1024;
@@ -220,14 +249,15 @@ static void kfas_daily_pass_locked(void)
 	boost_none = 0;
 #endif
 
-	ui_umin = (g_kfas.mode == KFAS_MODE_POWERSAVE) ? 285 :
-		  (g_kfas.mode == KFAS_MODE_BALANCE) ? 295 : 320;
+	ui_umin = (g_kfas.mode == KFAS_MODE_POWERSAVE) ? 180 :
+		  (g_kfas.mode == KFAS_MODE_BALANCE) ? 220 :
+		  (g_kfas.mode == KFAS_MODE_PERFORMANCE) ? 295 : 350;
 	trash_umax = (g_kfas.mode == KFAS_MODE_POWERSAVE) ? 200 :
 		     (g_kfas.mode == KFAS_MODE_BALANCE) ? 220 : 240;
 
 	/* Phase 1: Snapshot thread group under RCU */
 	rcu_read_lock();
-	leader = pid_task(find_vpid(tgid), PIDTYPE_PID);
+	leader = pid_task(find_pid_ns(tgid, &init_pid_ns), PIDTYPE_PID);
 	if (leader && pid_alive(leader)) {
 		for_each_thread(leader, t) {
 			struct kfas_daily_scan_entry *e;
@@ -299,7 +329,9 @@ static void kfas_daily_pass_locked(void)
 	for (i = 0; i < nr_crit && nr_next < KFAS_DAILY_MAX_MANAGED; i++) {
 		struct kfas_daily_scan_entry *e = &g_daily_scan[crit_idx[i]];
 		struct kfas_managed_tid *m = &g_daily_next[nr_next++];
+		const struct kfas_managed_tid *prev;
 		struct task_struct *task;
+		struct pid *pid_ref = NULL;
 		int tgt_cpu = kfas_daily_pick_ui_cpu(i, &used_cpus);
 
 		if (tgt_cpu >= 0)
@@ -315,13 +347,20 @@ static void kfas_daily_pass_locked(void)
 		m->uclamp_min = ui_umin;
 		m->uclamp_max = 1024;
 
-		task = kfas_daily_get_task(e->tid);
+		task = kfas_daily_get_task(e->tid, tgid, &pid_ref);
 		if (task) {
+			m->pid_ref = pid_ref;
+			prev = kfas_daily_find_prev_locked(e->tid);
+			m->orig_reset_on_fork =
+				(prev && prev->pid_ref == pid_ref &&
+				 prev->uclamp_applied) ?
+				prev->orig_reset_on_fork :
+				!!task->sched_reset_on_fork;
 			if (ops && ops->set_task_placement &&
 			    ops->set_task_placement(task, tgt_cpu, true,
 						    boost_none, 0) == 0)
 				m->walt_pinned = true;
-			if (kfas_daily_set_uclamp(task, ui_umin, 1024))
+			if (kfas_daily_set_uclamp(task, ui_umin, 1024, true))
 				m->uclamp_applied = true;
 			put_task_struct(task);
 		}
@@ -331,7 +370,9 @@ static void kfas_daily_pass_locked(void)
 	for (i = 0; i < nr_scan && nr_next < KFAS_DAILY_MAX_MANAGED; i++) {
 		struct kfas_daily_scan_entry *e = &g_daily_scan[i];
 		struct kfas_managed_tid *m;
+		const struct kfas_managed_tid *prev;
 		struct task_struct *task;
+		struct pid *pid_ref = NULL;
 
 		if (!e->is_trash)
 			continue;
@@ -352,9 +393,16 @@ static void kfas_daily_pass_locked(void)
 		m->uclamp_min = 0;
 		m->uclamp_max = trash_umax;
 
-		task = kfas_daily_get_task(e->tid);
+		task = kfas_daily_get_task(e->tid, tgid, &pid_ref);
 		if (task) {
-			if (kfas_daily_set_uclamp(task, 0, trash_umax))
+			m->pid_ref = pid_ref;
+			prev = kfas_daily_find_prev_locked(e->tid);
+			m->orig_reset_on_fork =
+				(prev && prev->pid_ref == pid_ref &&
+				 prev->uclamp_applied) ?
+				prev->orig_reset_on_fork :
+				!!task->sched_reset_on_fork;
+			if (kfas_daily_set_uclamp(task, 0, trash_umax, true))
 				m->uclamp_applied = true;
 			put_task_struct(task);
 		}
@@ -363,15 +411,17 @@ static void kfas_daily_pass_locked(void)
 
 	/* Phase 4: Restore any previously managed TID dropped in this pass */
 	for (i = 0; i < g_kfas.nr_daily_managed; i++) {
+		struct kfas_managed_tid *old = &g_kfas.daily_managed[i];
 		bool kept = false;
 
 		for (j = 0; j < nr_next; j++) {
-			if (g_daily_next[j].tid == g_kfas.daily_managed[i].tid) {
-				if (g_kfas.daily_managed[i].walt_pinned &&
-				    !g_daily_next[j].walt_pinned) {
+			if (g_daily_next[j].tid == old->tid) {
+				if (old->walt_pinned &&
+				    !g_daily_next[j].walt_pinned &&
+				    old->pid_ref) {
 					struct task_struct *task =
-						kfas_daily_get_task(
-							g_kfas.daily_managed[i].tid);
+						get_pid_task(old->pid_ref,
+							     PIDTYPE_PID);
 
 					if (task) {
 						if (ops &&
@@ -380,12 +430,16 @@ static void kfas_daily_pass_locked(void)
 						put_task_struct(task);
 					}
 				}
+				if (old->pid_ref) {
+					put_pid(old->pid_ref);
+					old->pid_ref = NULL;
+				}
 				kept = true;
 				break;
 			}
 		}
 		if (!kept)
-			kfas_daily_restore_entry_locked(&g_kfas.daily_managed[i]);
+			kfas_daily_restore_entry_locked(old);
 	}
 
 	memcpy(g_kfas.daily_managed, g_daily_next,
@@ -425,7 +479,7 @@ int kfas_daily_start_locked(pid_t pid)
 	kfas_daily_stop_locked();
 
 	rcu_read_lock();
-	leader = pid_task(find_vpid(pid), PIDTYPE_PID);
+	leader = pid_task(find_pid_ns(pid, &init_pid_ns), PIDTYPE_PID);
 	if (!leader || !pid_alive(leader))
 		leader = NULL;
 	rcu_read_unlock();
@@ -446,7 +500,7 @@ int kfas_daily_start_locked(pid_t pid)
 
 void kfas_daily_stop_locked(void)
 {
-	if (!g_kfas.daily_active && !READ_ONCE(g_kfas.daily_pid) &&
+	if (!READ_ONCE(g_kfas.daily_active) && !READ_ONCE(g_kfas.daily_pid) &&
 	    g_kfas.nr_daily_managed == 0)
 		return;
 
@@ -488,11 +542,22 @@ ssize_t kfas_daily_format_threads(char *buf, size_t size)
 
 	for (i = 0; i < g_kfas.nr_daily_managed && len < (ssize_t)size - 96; i++) {
 		const struct kfas_managed_tid *m = &g_kfas.daily_managed[i];
+		int live_cpu = m->actual_cpu;
+
+		if (m->pid_ref) {
+			struct task_struct *t;
+
+			rcu_read_lock();
+			t = pid_task(m->pid_ref, PIDTYPE_PID);
+			if (t)
+				live_cpu = task_cpu(t);
+			rcu_read_unlock();
+		}
 
 		len += scnprintf(buf + len, size - len,
 				 "%d\tT%u\t%d\t%d\t%u\t%u\t%u..%u\t%s\n",
 				 m->tid, m->tier, m->assigned_cpu,
-				 m->actual_cpu, m->demand, m->delta_exec_us,
+				 live_cpu, m->demand, m->delta_exec_us,
 				 m->uclamp_min, m->uclamp_max, m->comm);
 	}
 	mutex_unlock(&g_kfas.ctrl_mutex);

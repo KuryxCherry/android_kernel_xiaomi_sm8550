@@ -276,6 +276,14 @@ int kfas_session_start_locked(pid_t pid, const u32 *fps_list, u32 nr_fps)
 	if (ret) {
 		mutex_lock(&g_kfas.ctrl_mutex);
 		g_kfas.session_active = false;
+		g_kfas.rendering_active = false;
+		mutex_unlock(&g_kfas.ctrl_mutex);
+
+		cancel_work_sync(&g_kfas.frame_work);
+		cancel_delayed_work_sync(&g_kfas.idle_work);
+		cancel_delayed_work_sync(&g_kfas.place_work);
+
+		mutex_lock(&g_kfas.ctrl_mutex);
 		kfas_place_session_stop_locked();
 		kfas_freq_release_limits_locked();
 		mutex_unlock(&g_kfas.ctrl_mutex);

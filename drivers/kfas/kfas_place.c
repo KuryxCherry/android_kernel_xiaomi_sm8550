@@ -16,6 +16,7 @@
 #include <linux/ktime.h>
 #include <linux/math64.h>
 #include <linux/pid.h>
+#include <linux/pid_namespace.h>
 #include <linux/rcupdate.h>
 #include <linux/sched/signal.h>
 #include <linux/sched/task.h>
@@ -206,19 +207,41 @@ static bool kfas_is_skip_worker_comm(const char *comm)
 	       strncmp(comm, "Audio", 5) == 0;
 }
 
-static struct task_struct *kfas_get_task_by_tid(pid_t tid)
+static struct task_struct *kfas_get_task_and_pid(pid_t tid, pid_t expected_tgid,
+						 struct pid **out_pid)
 {
-	struct task_struct *t;
+	struct pid *pid;
+	struct task_struct *t = NULL;
 
+	*out_pid = NULL;
 	rcu_read_lock();
-	t = pid_task(find_vpid(tid), PIDTYPE_PID);
-	if (t)
-		get_task_struct(t);
+	pid = find_pid_ns(tid, &init_pid_ns);
+	if (pid) {
+		t = pid_task(pid, PIDTYPE_PID);
+		if (t && pid_alive(t) && t->tgid == expected_tgid) {
+			get_task_struct(t);
+			*out_pid = get_pid(pid);
+		} else {
+			t = NULL;
+		}
+	}
 	rcu_read_unlock();
 	return t;
 }
 
-static bool kfas_apply_task_uclamp(struct task_struct *task, u32 umin, u32 umax)
+static const struct kfas_managed_tid *kfas_find_prev_managed_locked(pid_t tid)
+{
+	u32 i;
+
+	for (i = 0; i < g_kfas.nr_managed; i++) {
+		if (g_kfas.managed[i].tid == tid)
+			return &g_kfas.managed[i];
+	}
+	return NULL;
+}
+
+static bool kfas_apply_task_uclamp(struct task_struct *task, u32 umin, u32 umax,
+				   bool reset_on_fork)
 {
 	struct sched_attr attr;
 
@@ -230,7 +253,8 @@ static bool kfas_apply_task_uclamp(struct task_struct *task, u32 umin, u32 umax)
 	attr.size = sizeof(attr);
 	attr.sched_policy = (u32)task->policy;
 	attr.sched_nice = task_nice(task);
-	attr.sched_flags = SCHED_FLAG_KEEP_ALL | SCHED_FLAG_UTIL_CLAMP;
+	attr.sched_flags = SCHED_FLAG_KEEP_ALL | SCHED_FLAG_UTIL_CLAMP |
+			   (reset_on_fork ? SCHED_FLAG_RESET_ON_FORK : 0);
 	attr.sched_util_min = min_t(u32, 1024, umin);
 	attr.sched_util_max = clamp_t(u32, umax, attr.sched_util_min, 1024);
 
@@ -240,22 +264,26 @@ static bool kfas_apply_task_uclamp(struct task_struct *task, u32 umin, u32 umax)
 static void kfas_restore_managed_entry_locked(struct kfas_managed_tid *m)
 {
 	const struct kfas_walt_ops *ops = smp_load_acquire(&g_kfas.walt_ops);
-	struct task_struct *task;
+	struct task_struct *task = NULL;
 
-	if (!m->tid || (!m->walt_pinned && !m->uclamp_applied))
-		return;
-
-	task = kfas_get_task_by_tid(m->tid);
-	if (task) {
-		if (m->walt_pinned && ops && ops->clear_task_placement)
-			ops->clear_task_placement(task);
-		if (m->uclamp_applied)
-			kfas_apply_task_uclamp(task, 0, 1024);
-		put_task_struct(task);
+	if (m->pid_ref) {
+		if (m->walt_pinned || m->uclamp_applied)
+			task = get_pid_task(m->pid_ref, PIDTYPE_PID);
+		if (task) {
+			if (m->walt_pinned && ops && ops->clear_task_placement)
+				ops->clear_task_placement(task);
+			if (m->uclamp_applied)
+				kfas_apply_task_uclamp(task, 0, 1024,
+						       m->orig_reset_on_fork);
+			put_task_struct(task);
+		}
+		put_pid(m->pid_ref);
+		m->pid_ref = NULL;
 	}
 
 	m->walt_pinned = false;
 	m->uclamp_applied = false;
+	m->orig_reset_on_fork = false;
 	m->assigned_cpu = -1;
 	m->uclamp_min = 0;
 	m->uclamp_max = 1024;
@@ -380,7 +408,7 @@ static void kfas_place_pass_locked(bool urgent)
 
 	/* Phase 1: Snapshot thread group under RCU (no sleeping!) */
 	rcu_read_lock();
-	leader = pid_task(find_vpid(tgid), PIDTYPE_PID);
+	leader = pid_task(find_pid_ns(tgid, &init_pid_ns), PIDTYPE_PID);
 	if (leader && pid_alive(leader)) {
 		for_each_thread(leader, t) {
 			struct kfas_scan_entry *e;
@@ -472,7 +500,8 @@ static void kfas_place_pass_locked(bool urgent)
 			    g_scan_buf[i].policy != SCHED_BATCH)
 				continue;
 			/* Skip sleeping threads that did not run in the last pass */
-			if (have_prev && g_scan_buf[i].delta_exec_us < 500 &&
+			if (have_prev && pass_dt_us >= 40000 &&
+			    g_scan_buf[i].delta_exec_us < 500 &&
 			    g_scan_buf[i].wake_hits == 0 &&
 			    !g_scan_buf[i].is_vip)
 				continue;
@@ -508,7 +537,9 @@ static void kfas_place_pass_locked(bool urgent)
 	for (i = 0; i < nr_crit && nr_next < KFAS_MAX_MANAGED_TIDS; i++) {
 		struct kfas_scan_entry *e = &g_scan_buf[crit_idx[i]];
 		struct kfas_managed_tid *m = &g_next_managed[nr_next++];
+		const struct kfas_managed_tid *prev;
 		struct task_struct *task;
+		struct pid *pid_ref = NULL;
 		int tgt_cpu;
 		u32 umin;
 		int boost;
@@ -585,14 +616,21 @@ static void kfas_place_pass_locked(bool urgent)
 				max_busy = busy;
 		}
 
-		task = kfas_get_task_by_tid(e->tid);
+		task = kfas_get_task_and_pid(e->tid, tgid, &pid_ref);
 		if (task) {
+			m->pid_ref = pid_ref;
+			prev = kfas_find_prev_managed_locked(e->tid);
+			m->orig_reset_on_fork =
+				(prev && prev->pid_ref == pid_ref &&
+				 prev->uclamp_applied) ?
+				prev->orig_reset_on_fork :
+				!!task->sched_reset_on_fork;
 			if (ops && ops->set_task_placement &&
 			    ops->set_task_placement(task, tgt_cpu, true,
 						    boost,
 						    KFAS_WALT_BOOST_NS) == 0)
 				m->walt_pinned = true;
-			if (kfas_apply_task_uclamp(task, umin, 1024))
+			if (kfas_apply_task_uclamp(task, umin, 1024, true))
 				m->uclamp_applied = true;
 			put_task_struct(task);
 		}
@@ -613,7 +651,9 @@ static void kfas_place_pass_locked(bool urgent)
 		for (i = 0; i < nr_scan && nr_next < KFAS_MAX_MANAGED_TIDS; i++) {
 			struct kfas_scan_entry *e = &g_scan_buf[i];
 			struct kfas_managed_tid *m;
+			const struct kfas_managed_tid *prev;
 			struct task_struct *task;
+			struct pid *pid_ref = NULL;
 			bool is_crit = false;
 
 			for (j = 0; j < nr_crit; j++) {
@@ -644,10 +684,18 @@ static void kfas_place_pass_locked(bool urgent)
 			m->uclamp_min = 0;
 			m->uclamp_max = cfg->worker_uclamp_max;
 
-			task = kfas_get_task_by_tid(e->tid);
+			task = kfas_get_task_and_pid(e->tid, tgid, &pid_ref);
 			if (task) {
+				m->pid_ref = pid_ref;
+				prev = kfas_find_prev_managed_locked(e->tid);
+				m->orig_reset_on_fork =
+					(prev && prev->pid_ref == pid_ref &&
+					 prev->uclamp_applied) ?
+					prev->orig_reset_on_fork :
+					!!task->sched_reset_on_fork;
 				if (kfas_apply_task_uclamp(task, 0,
-							   cfg->worker_uclamp_max))
+							   cfg->worker_uclamp_max,
+							   true))
 					m->uclamp_applied = true;
 				put_task_struct(task);
 			}
@@ -656,19 +704,21 @@ static void kfas_place_pass_locked(bool urgent)
 
 	/* Phase 4: Restore any previously managed TID no longer in g_next_managed */
 	for (i = 0; i < g_kfas.nr_managed; i++) {
+		struct kfas_managed_tid *old = &g_kfas.managed[i];
 		bool kept = false;
 
 		for (j = 0; j < nr_next; j++) {
-			if (g_next_managed[j].tid == g_kfas.managed[i].tid) {
+			if (g_next_managed[j].tid == old->tid) {
 				/*
 				 * If a thread moved from Tier 0/1 to Tier 2,
 				 * clear its WALT pipeline/MVP flag explicitly.
 				 */
-				if (g_kfas.managed[i].walt_pinned &&
-				    !g_next_managed[j].walt_pinned) {
+				if (old->walt_pinned &&
+				    !g_next_managed[j].walt_pinned &&
+				    old->pid_ref) {
 					struct task_struct *task =
-						kfas_get_task_by_tid(
-							g_kfas.managed[i].tid);
+						get_pid_task(old->pid_ref,
+							     PIDTYPE_PID);
 
 					if (task) {
 						if (ops &&
@@ -677,12 +727,16 @@ static void kfas_place_pass_locked(bool urgent)
 						put_task_struct(task);
 					}
 				}
+				if (old->pid_ref) {
+					put_pid(old->pid_ref);
+					old->pid_ref = NULL;
+				}
 				kept = true;
 				break;
 			}
 		}
 		if (!kept)
-			kfas_restore_managed_entry_locked(&g_kfas.managed[i]);
+			kfas_restore_managed_entry_locked(old);
 	}
 
 	memcpy(g_kfas.managed, g_next_managed,

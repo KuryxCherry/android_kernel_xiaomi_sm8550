@@ -36,7 +36,7 @@ static ssize_t enable_store(struct kobject *kobj, struct kobj_attribute *attr,
 		return -EINVAL;
 
 	mutex_lock(&g_kfas.session_mutex);
-	g_kfas.enabled = val;
+	WRITE_ONCE(g_kfas.enabled, val);
 	if (!val) {
 		if (g_kfas.session_active)
 			kfas_session_stop_locked();

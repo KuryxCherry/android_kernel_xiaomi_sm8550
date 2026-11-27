@@ -15,6 +15,7 @@
 #include <linux/limits.h>
 #include <linux/mm_types.h>
 #include <linux/mutex.h>
+#include <linux/pid.h>
 #include <linux/pm_qos.h>
 #include <linux/sched.h>
 #include <linux/spinlock.h>
@@ -23,7 +24,7 @@
 #include <linux/uprobes.h>
 #include <linux/workqueue.h>
 
-#define KFAS_VERSION		"1.1.1"
+#define KFAS_VERSION		"1.1.2"
 
 #define KFAS_MAX_CLUSTERS	4
 #define KFAS_MAX_OPPS		64
@@ -140,6 +141,7 @@ struct kfas_wake_slot {
 
 struct kfas_managed_tid {
 	pid_t tid;
+	struct pid *pid_ref;
 	char comm[TASK_COMM_LEN];
 	u8 tier;		/* 0 = render, 1 = primary logic, 2 = worker */
 	int assigned_cpu;
@@ -151,6 +153,7 @@ struct kfas_managed_tid {
 	u32 uclamp_max;
 	bool walt_pinned;
 	bool uclamp_applied;
+	bool orig_reset_on_fork;
 };
 
 struct kfas_topo {
