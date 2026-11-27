@@ -247,7 +247,9 @@ void kfas_freq_reset_session_locked(void)
 	g_kfas.perf_level = 500;
 	g_kfas.surplus_streak = 0;
 	g_kfas.jank_streak = 0;
+	g_kfas.ema_slow_streak = 0;
 	g_kfas.down_cooldown = 0;
+	g_kfas.max_crit_busy_pct = 0;
 	g_kfas.cur_fps_x10 = 0;
 	g_kfas.ema_frame_us = 0;
 	g_kfas.ema_exec_us = 0;
@@ -464,10 +466,11 @@ void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s)
 {
 	const struct kfas_mode_cfg *cfg = &g_kfas.mode_cfg[g_kfas.mode];
 	struct kfas_gpu_snap gpu;
-	u64 budget_ns, tol_ns, jank_ns, exec_ceil_ns, exec_hold_ns, ema_exec_ns;
+	u64 budget_ns, tol_ns, tol_min_ns, jank_ns, ema_jank_ns;
+	u64 exec_ceil_ns, exec_hold_ns, ema_exec_ns;
 	u32 frame_us, exec_us, delay_us, dq_us, prev_ema_frame_us;
 	u32 fps_x10, temp_mc, margin, tol_pct, ema_tol_pct, ema_jank_us;
-	u32 exec_ceil_pct;
+	u32 exec_ceil_pct, exec_hold_pct, crit_busy;
 	enum kfas_bottleneck bn = KFAS_BN_OK;
 	bool severe = false;
 	bool frame_missed, exec_high, exec_hold;
@@ -511,39 +514,48 @@ void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s)
 	/*
 	 * VSync-aware frame pressure classification:
 	 *
-	 * On VSync-paced games, wall-clock frame_ns hovers right around
-	 * budget_ns (e.g. 8333 us at 120 FPS) with +/-3-6% Choreographer phase
-	 * jitter. Comparing frame_ns against budget_ns*(1-margin) misclassifies
-	 * locked full-FPS frames as CPU jank and pins perf_level at 1000.
-	 *
-	 * Separate real VSync slips from proactive CPU headroom:
-	 *  - jank_ns:      budget_ns + positive VSync jitter tolerance
-	 *  - ema_jank_us:  sustained EMA drift above 102-103% of budget
-	 *  - exec_ceil_ns: render-thread CPU headroom ceiling (scaled by margin)
-	 *  - exec_hold_ns: 10% deadband below exec_ceil_ns to prevent hunting
+	 * On triple-buffered VSync pipelines, Surface::queueBuffer intervals
+	 * naturally oscillate +/-10-14% around budget_ns (e.g. 7.5ms / 9.1ms
+	 * pairs at locked 120 FPS) without missing scanout. Classify real
+	 * slips and proactive CPU pressure across all 4 modes:
+	 *  - jank_ns:      budget_ns + mode-scaled phase jitter tolerance
+	 *  - ema_jank_us:  sustained drift requiring >=3 consecutive slow
+	 *                  frames so 1 isolated 16ms VSync tick cannot ratchet
+	 *                  perf_level to 1000 via decaying EMA tail
+	 *  - exec_ceil/hold: combines render-thread exec_ns AND heaviest
+	 *                  critical thread (e.g. UnityMain) live busy%
 	 */
-	tol_pct = margin >= 14 ? 4 : (margin >= 10 ? 5 : (margin >= 6 ? 6 : 7));
-	tol_ns = max_t(u64, div_u64(budget_ns * tol_pct, 100U), 500000ULL);
+	tol_pct = margin >= 14 ? 10 : (margin >= 10 ? 12 : (margin >= 6 ? 14 : 16));
+	tol_min_ns = margin >= 14 ? 850000ULL :
+		     (margin >= 10 ? 1000000ULL :
+		      (margin >= 6 ? 1150000ULL : 1300000ULL));
+	tol_ns = max_t(u64, div_u64(budget_ns * tol_pct, 100U), tol_min_ns);
 	jank_ns = budget_ns + tol_ns;
 
 	ema_tol_pct = margin >= 12 ? 2 : 3;
-	ema_jank_us = (u32)div_u64(budget_ns * (100U + ema_tol_pct), 100000ULL);
+	ema_jank_ns = div_u64(budget_ns * (100U + ema_tol_pct), 100U);
+	ema_jank_us = (u32)div_u64(ema_jank_ns, 1000U);
+
+	if (s->frame_ns > ema_jank_ns)
+		g_kfas.ema_slow_streak = min_t(u32, 32,
+					       g_kfas.ema_slow_streak + 1);
+	else
+		g_kfas.ema_slow_streak = 0;
 
 	exec_ceil_pct = clamp_t(u32, 84U - margin, 54U, 82U);
+	exec_hold_pct = exec_ceil_pct - 10U;
 	exec_ceil_ns = div_u64(budget_ns * exec_ceil_pct, 100U);
-	exec_hold_ns = div_u64(budget_ns * (exec_ceil_pct - 10U), 100U);
+	exec_hold_ns = div_u64(budget_ns * exec_hold_pct, 100U);
 	ema_exec_ns = (u64)g_kfas.ema_exec_us * 1000ULL;
+	crit_busy = g_kfas.max_crit_busy_pct;
 
-	/*
-	 * Require the current frame to also exceed budget + half-tolerance
-	 * before triggering sustained EMA jank, so a single 16ms VSync tick
-	 * cannot chain-react across the next 4-5 normal 8.35ms frames.
-	 */
 	frame_missed = (s->frame_ns > jank_ns) ||
 		       (g_kfas.ema_frame_us > ema_jank_us &&
-			s->frame_ns > budget_ns + (tol_ns >> 1));
-	exec_high = (ema_exec_ns > exec_ceil_ns);
-	exec_hold = (ema_exec_ns >= exec_hold_ns);
+			g_kfas.ema_slow_streak >= 3);
+	exec_high = (ema_exec_ns > exec_ceil_ns) ||
+		    (crit_busy > exec_ceil_pct);
+	exec_hold = (ema_exec_ns >= exec_hold_ns) ||
+		    (crit_busy >= exec_hold_pct);
 
 	kfas_gpu_get_snapshot(&gpu);
 
@@ -613,6 +625,9 @@ void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s)
 					      prev_ema_frame_us <= ema_jank_us &&
 					      s->frame_ns <=
 					      div_u64(budget_ns * 215, 100U));
+			bool cpu_light_tick =
+				(ema_exec_ns < div_u64(budget_ns * 40, 100U)) &&
+				(crit_busy < 55);
 
 			g_kfas.jank_streak = min_t(u32, 10,
 						   g_kfas.jank_streak + 1);
@@ -624,18 +639,24 @@ void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s)
 				delta = clamp_t(u32,
 						(over_pm * cfg->up_gain) / 100,
 						65, 240);
-			} else if (isolated_tick) {
+			} else if (isolated_tick && cpu_light_tick) {
 				/*
-				 * Single isolated VSync edge tick (<= ~2x budget)
-				 * while smoothed EMA FPS is still locked: apply
-				 * a gentle protective bump without pinning perf
-				 * at 1000; a second consecutive miss escalates
-				 * immediately via !isolated_tick.
+				 * Single isolated VSync beat while CPU load is
+				 * clearly light: nudge lightly with a short
+				 * cooldown so 1x/sec VSync skips cannot ratchet
+				 * perf_level to 1000. A second consecutive miss
+				 * still triggers immediate severe escalation.
 				 */
+				g_kfas.down_cooldown = max_t(u32, 4,
+							     cfg->down_hold_frames / 2);
+				delta = clamp_t(u32,
+						(over_pm * cfg->up_gain) / 480,
+						6, 18);
+			} else if (isolated_tick) {
 				g_kfas.down_cooldown = cfg->down_hold_frames;
 				delta = clamp_t(u32,
 						(over_pm * cfg->up_gain) / 260,
-						10, 36);
+						12, 36);
 			} else {
 				g_kfas.down_cooldown = cfg->down_hold_frames * 3;
 				delta = clamp_t(u32,
@@ -644,15 +665,20 @@ void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s)
 			}
 		} else {
 			/* Proactive headroom boost before an actual drop */
-			u64 over_ns = ema_exec_ns > exec_ceil_ns ?
-				      (ema_exec_ns - exec_ceil_ns) : 0;
-			u32 over_pm = (u32)min_t(u64, 1000ULL,
-						 div64_u64(over_ns * 1000ULL,
-							   budget_ns));
+			u32 over_pm = 0;
 
-			g_kfas.down_cooldown = cfg->down_hold_frames * 2;
+			if (ema_exec_ns > exec_ceil_ns)
+				over_pm = (u32)min_t(u64, 1000ULL,
+						     div64_u64((ema_exec_ns - exec_ceil_ns) * 1000ULL,
+							       budget_ns));
+			if (crit_busy > exec_ceil_pct)
+				over_pm = max_t(u32, over_pm,
+						min_t(u32, 1000U,
+						      (crit_busy - exec_ceil_pct) * 10U));
+
+			g_kfas.down_cooldown = cfg->down_hold_frames;
 			delta = clamp_t(u32, (over_pm * cfg->up_gain) / 200,
-					10, 40);
+					8, 36);
 		}
 		g_kfas.perf_level = min_t(u32, 1000, g_kfas.perf_level + delta);
 		break;
@@ -671,14 +697,15 @@ void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s)
 		}
 		g_kfas.surplus_streak++;
 		if (g_kfas.surplus_streak >= cfg->down_hold_frames) {
-			u64 head_ns = exec_ceil_ns > ema_exec_ns ?
-				      (exec_ceil_ns - ema_exec_ns) : 0;
-			u32 head_pm = (u32)min_t(u64, 1000ULL,
-						 div64_u64(head_ns * 1000ULL,
-							   budget_ns));
+			u32 exec_pct = (u32)min_t(u64, 100ULL,
+						  div64_u64(ema_exec_ns * 100ULL,
+							    budget_ns));
+			u32 load_pct = max(exec_pct, crit_busy);
+			u32 head_pm = exec_ceil_pct > load_pct ?
+				      (exec_ceil_pct - load_pct) * 10U : 0;
 			u32 step = clamp_t(u32,
-					   (head_pm * cfg->down_gain) / 360,
-					   5, 18);
+					   (head_pm * cfg->down_gain) / 300,
+					   6, 22);
 
 			if (g_kfas.perf_level > step)
 				g_kfas.perf_level -= step;

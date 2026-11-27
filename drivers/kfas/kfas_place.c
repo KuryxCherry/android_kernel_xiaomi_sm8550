@@ -61,6 +61,7 @@ static struct kfas_scan_entry *g_scan_buf;
 static struct kfas_managed_tid *g_next_managed;
 static struct kfas_prev_exec *g_prev_exec;
 static u32 g_nr_prev_exec;
+static u64 g_last_place_ns;
 
 static void kfas_set_core_ctl_boost_locked(bool want)
 {
@@ -363,6 +364,8 @@ static void kfas_place_pass_locked(bool urgent)
 	u32 nr_crit = 0;
 	cpumask_t used_cpus;
 	u32 nr_next = 0;
+	u64 now_ns, pass_dt_us = 0;
+	u32 max_busy = 0;
 	bool have_prev;
 	bool used_prime = false;
 	bool want_boost;
@@ -407,7 +410,12 @@ static void kfas_place_pass_locked(bool urgent)
 		return;
 
 	/* Phase 2: Score threads by exec delta + WALT demand + wake-link */
-	have_prev = (g_nr_prev_exec > 0);
+	now_ns = ktime_get_mono_fast_ns();
+	have_prev = (g_nr_prev_exec > 0 && g_last_place_ns > 0 &&
+		     now_ns > g_last_place_ns);
+	if (have_prev)
+		pass_dt_us = div_u64(now_ns - g_last_place_ns, 1000U);
+	g_last_place_ns = now_ns;
 
 	for (i = 0; i < nr_scan; i++) {
 		struct kfas_scan_entry *e = &g_scan_buf[i];
@@ -568,6 +576,14 @@ static void kfas_place_pass_locked(bool urgent)
 		m->delta_exec_us = e->delta_exec_us;
 		m->uclamp_min = umin;
 		m->uclamp_max = 1024;
+		if (have_prev && pass_dt_us >= 20000) {
+			u32 busy = (u32)min_t(u64, 100ULL,
+					      div64_u64((u64)e->delta_exec_us * 100ULL,
+							pass_dt_us));
+
+			if (busy > max_busy)
+				max_busy = busy;
+		}
 
 		task = kfas_get_task_by_tid(e->tid);
 		if (task) {
@@ -581,6 +597,9 @@ static void kfas_place_pass_locked(bool urgent)
 			put_task_struct(task);
 		}
 	}
+
+	if (have_prev && pass_dt_us >= 20000)
+		g_kfas.max_crit_busy_pct = max_busy;
 
 	g_kfas.prime_in_use = used_prime;
 	want_boost = g_kfas.unpause_big && cfg->prime_enable &&
@@ -693,6 +712,8 @@ void kfas_place_session_start_locked(void)
 	unsigned long flags;
 
 	g_nr_prev_exec = 0;
+	g_last_place_ns = 0;
+	g_kfas.max_crit_busy_pct = 0;
 	g_kfas.prime_in_use = false;
 	raw_spin_lock_irqsave(&g_kfas.wake_lock, flags);
 	memset(g_kfas.wake_slots, 0, sizeof(g_kfas.wake_slots));
@@ -706,6 +727,8 @@ void kfas_place_session_start_locked(void)
 
 void kfas_place_idle_relax_locked(void)
 {
+	g_last_place_ns = 0;
+	g_kfas.max_crit_busy_pct = 0;
 	g_kfas.prime_in_use = false;
 	kfas_restore_all_managed_locked();
 	kfas_set_core_ctl_boost_locked(false);
@@ -718,6 +741,8 @@ void kfas_place_session_stop_locked(void)
 		g_kfas.waking_tp_active = false;
 	}
 	g_nr_prev_exec = 0;
+	g_last_place_ns = 0;
+	g_kfas.max_crit_busy_pct = 0;
 	g_kfas.prime_in_use = false;
 	kfas_restore_all_managed_locked();
 	kfas_set_core_ctl_boost_locked(false);

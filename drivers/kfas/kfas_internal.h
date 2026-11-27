@@ -23,7 +23,7 @@
 #include <linux/uprobes.h>
 #include <linux/workqueue.h>
 
-#define KFAS_VERSION		"1.1.0"
+#define KFAS_VERSION		"1.1.1"
 
 #define KFAS_MAX_CLUSTERS	4
 #define KFAS_MAX_OPPS		64
@@ -234,7 +234,9 @@ struct kfas_state {
 	u32 perf_level;		/* 0..1000 normalized compute headroom */
 	u32 surplus_streak;
 	u32 jank_streak;
+	u32 ema_slow_streak;
 	u32 down_cooldown;
+	u32 max_crit_busy_pct;
 	u32 cur_fps_x10;	/* EMA fps * 10 */
 	u32 ema_frame_us;
 	u32 ema_exec_us;

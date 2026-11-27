@@ -174,6 +174,7 @@ static void kfas_idle_work_fn(struct work_struct *work)
 	if (g_kfas.session_active && g_kfas.rendering_active) {
 		g_kfas.rendering_active = false;
 		g_kfas.jank_streak = 0;
+		g_kfas.ema_slow_streak = 0;
 		g_kfas.surplus_streak = 0;
 		g_kfas.down_cooldown = 0;
 		/* Relax ceilings & core_ctl during loading/paused screens */

@@ -547,11 +547,12 @@ static ssize_t status_show(struct kobject *kobj, struct kobj_attribute *attr,
 			 g_kfas.rendering_active ? 1 : 0,
 			 kfas_mode_name(g_kfas.mode));
 	len += scnprintf(buf + len, PAGE_SIZE - len,
-			 "pid=%d render_tid=%d target_fps=%u cur_fps=%u.%u perf=%u/1000 bn=%s\n",
+			 "pid=%d render_tid=%d target_fps=%u cur_fps=%u.%u perf=%u/1000 bn=%s crit_busy=%u%%\n",
 			 READ_ONCE(g_kfas.target_pid), g_kfas.render_tid,
 			 g_kfas.locked_fps, g_kfas.cur_fps_x10 / 10,
 			 g_kfas.cur_fps_x10 % 10, g_kfas.perf_level,
-			 kfas_bn_name(g_kfas.last_bn));
+			 kfas_bn_name(g_kfas.last_bn),
+			 g_kfas.max_crit_busy_pct);
 	len += scnprintf(buf + len, PAGE_SIZE - len,
 			 "ema_us: frame=%u exec=%u delay=%u dq_wait=%u frames=%llu dropped=%llu\n",
 			 g_kfas.ema_frame_us, g_kfas.ema_exec_us,
