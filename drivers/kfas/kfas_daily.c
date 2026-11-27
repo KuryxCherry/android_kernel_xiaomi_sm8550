@@ -332,37 +332,9 @@ static void kfas_daily_pass_locked(void)
 	}
 
 	/* Phase 4: Restore any previously managed TID dropped in this pass */
-	for (i = 0; i < g_kfas.nr_daily_managed; i++) {
-		struct kfas_managed_tid *old = &g_kfas.daily_managed[i];
-		bool kept = false;
-
-		for (j = 0; j < nr_next; j++) {
-			if (g_daily_next[j].tid == old->tid) {
-				if (old->walt_pinned &&
-				    !g_daily_next[j].walt_pinned &&
-				    old->pid_ref) {
-					struct task_struct *task =
-						get_pid_task(old->pid_ref,
-							     PIDTYPE_PID);
-
-					if (task) {
-						if (ops &&
-						    ops->clear_task_placement)
-							ops->clear_task_placement(task);
-						put_task_struct(task);
-					}
-				}
-				if (old->pid_ref) {
-					put_pid(old->pid_ref);
-					old->pid_ref = NULL;
-				}
-				kept = true;
-				break;
-			}
-		}
-		if (!kept)
-			kfas_managed_restore_entry_locked(old);
-	}
+	kfas_managed_reconcile_locked(g_kfas.daily_managed,
+				      g_kfas.nr_daily_managed,
+				      g_daily_next, nr_next);
 
 	memcpy(g_kfas.daily_managed, g_daily_next,
 	       nr_next * sizeof(struct kfas_managed_tid));

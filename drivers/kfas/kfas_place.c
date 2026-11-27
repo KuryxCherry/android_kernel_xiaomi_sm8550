@@ -290,6 +290,51 @@ void kfas_managed_restore_entry_locked(struct kfas_managed_tid *m)
 	m->uclamp_max = 1024;
 }
 
+void kfas_managed_reconcile_locked(struct kfas_managed_tid *old_arr,
+				   u32 old_nr,
+				   const struct kfas_managed_tid *new_arr,
+				   u32 new_nr)
+{
+	const struct kfas_walt_ops *ops = smp_load_acquire(&g_kfas.walt_ops);
+	u32 i, j;
+
+	for (i = 0; i < old_nr; i++) {
+		struct kfas_managed_tid *old = &old_arr[i];
+		bool kept = false;
+
+		for (j = 0; j < new_nr; j++) {
+			if (new_arr[j].tid == old->tid &&
+			    new_arr[j].pid_ref == old->pid_ref) {
+				/*
+				 * If a thread moved from Tier 0/1 to Tier 2,
+				 * clear its WALT pipeline/MVP flag explicitly.
+				 */
+				if (old->walt_pinned &&
+				    !new_arr[j].walt_pinned && old->pid_ref) {
+					struct task_struct *task =
+						get_pid_task(old->pid_ref,
+							     PIDTYPE_PID);
+
+					if (task) {
+						if (ops &&
+						    ops->clear_task_placement)
+							ops->clear_task_placement(task);
+						put_task_struct(task);
+					}
+				}
+				if (old->pid_ref) {
+					put_pid(old->pid_ref);
+					old->pid_ref = NULL;
+				}
+				kept = true;
+				break;
+			}
+		}
+		if (!kept)
+			kfas_managed_restore_entry_locked(old);
+	}
+}
+
 static void kfas_restore_all_managed_locked(void)
 {
 	u32 i;
@@ -707,41 +752,8 @@ static void kfas_place_pass_locked(bool urgent)
 	}
 
 	/* Phase 4: Restore any previously managed TID no longer in g_next_managed */
-	for (i = 0; i < g_kfas.nr_managed; i++) {
-		struct kfas_managed_tid *old = &g_kfas.managed[i];
-		bool kept = false;
-
-		for (j = 0; j < nr_next; j++) {
-			if (g_next_managed[j].tid == old->tid) {
-				/*
-				 * If a thread moved from Tier 0/1 to Tier 2,
-				 * clear its WALT pipeline/MVP flag explicitly.
-				 */
-				if (old->walt_pinned &&
-				    !g_next_managed[j].walt_pinned &&
-				    old->pid_ref) {
-					struct task_struct *task =
-						get_pid_task(old->pid_ref,
-							     PIDTYPE_PID);
-
-					if (task) {
-						if (ops &&
-						    ops->clear_task_placement)
-							ops->clear_task_placement(task);
-						put_task_struct(task);
-					}
-				}
-				if (old->pid_ref) {
-					put_pid(old->pid_ref);
-					old->pid_ref = NULL;
-				}
-				kept = true;
-				break;
-			}
-		}
-		if (!kept)
-			kfas_managed_restore_entry_locked(old);
-	}
+	kfas_managed_reconcile_locked(g_kfas.managed, g_kfas.nr_managed,
+				      g_next_managed, nr_next);
 
 	memcpy(g_kfas.managed, g_next_managed,
 	       nr_next * sizeof(struct kfas_managed_tid));

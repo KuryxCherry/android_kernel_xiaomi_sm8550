@@ -249,6 +249,7 @@ static int kfas_q_enter_handler(struct uprobe_consumer *uc,
 		};
 		g_kfas.ring_head = next_head;
 		g_kfas.frames_total++;
+		atomic_inc(&g_kfas.frame_seq);
 		emit = true;
 	}
 
@@ -269,6 +270,7 @@ void kfas_uprobe_reset_state(void)
 	g_kfas.ring_tail = 0;
 	g_kfas.frames_total = 0;
 	g_kfas.frames_dropped_ring = 0;
+	atomic_set(&g_kfas.frame_seq, 0);
 	g_kfas.dominant_surface = 0;
 	memset(g_kfas.surfaces, 0, sizeof(g_kfas.surfaces));
 	raw_spin_unlock_irqrestore(&g_kfas.frame_lock, flags);

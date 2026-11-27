@@ -542,9 +542,9 @@ static ssize_t status_show(struct kobject *kobj, struct kobj_attribute *attr,
 	mutex_lock(&g_kfas.ctrl_mutex);
 	len += scnprintf(buf + len, PAGE_SIZE - len,
 			 "version=%s enabled=%d active=%d rendering=%d mode=%s\n",
-			 KFAS_VERSION, g_kfas.enabled ? 1 : 0,
-			 g_kfas.session_active ? 1 : 0,
-			 g_kfas.rendering_active ? 1 : 0,
+			 KFAS_VERSION, READ_ONCE(g_kfas.enabled) ? 1 : 0,
+			 READ_ONCE(g_kfas.session_active) ? 1 : 0,
+			 READ_ONCE(g_kfas.rendering_active) ? 1 : 0,
 			 kfas_mode_name(g_kfas.mode));
 	len += scnprintf(buf + len, PAGE_SIZE - len,
 			 "pid=%d render_tid=%d target_fps=%u cur_fps=%u.%u perf=%u/1000 bn=%s crit_busy=%u%%\n",
@@ -554,11 +554,12 @@ static ssize_t status_show(struct kobject *kobj, struct kobj_attribute *attr,
 			 kfas_bn_name(g_kfas.last_bn),
 			 g_kfas.max_crit_busy_pct);
 	len += scnprintf(buf + len, PAGE_SIZE - len,
-			 "ema_us: frame=%u exec=%u delay=%u dq_wait=%u frames=%llu dropped=%llu\n",
+			 "ema_us: frame=%u exec=%u delay=%u dq_wait=%u frames=%llu dropped=%llu rescues=%llu\n",
 			 g_kfas.ema_frame_us, g_kfas.ema_exec_us,
 			 g_kfas.ema_delay_us, g_kfas.ema_dq_wait_us,
-			 (unsigned long long)g_kfas.frames_total,
-			 (unsigned long long)g_kfas.frames_dropped_ring);
+			 (unsigned long long)READ_ONCE(g_kfas.frames_total),
+			 (unsigned long long)READ_ONCE(g_kfas.frames_dropped_ring),
+			 (unsigned long long)g_kfas.mid_frame_rescues);
 	len += scnprintf(buf + len, PAGE_SIZE - len,
 			 "gpu: valid=%d busy=%u%% freq=%u/%uMHz cpu_temp=%umC core_ctl_boost=%d\n",
 			 gpu.valid ? 1 : 0, gpu.busy_pct, gpu.freq_mhz,

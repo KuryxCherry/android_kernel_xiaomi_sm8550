@@ -3,11 +3,13 @@
  * Kernel Frame-Aware Scheduler (KFAS) - Multi-Cluster FreqQoS Controller
  *
  * Implements closed-loop frame-time regulation over Linux FreqQoS constraints
- * with adaptive target-FPS locking, CPU/SCHED/GPU bottleneck separation,
+ * with adaptive target-FPS locking, 5-frame sliding-window drift detection,
+ * intra-frame hrtimer ceiling rescue, CPU/SCHED/GPU bottleneck separation,
  * cluster-proportional OPP mapping, and optional soft thermal guardrail.
  */
 #include <linux/arch_topology.h>
 #include <linux/cpufreq.h>
+#include <linux/hrtimer.h>
 #include <linux/ktime.h>
 #include <linux/math64.h>
 #include <linux/pm_qos.h>
@@ -223,12 +225,18 @@ void kfas_freq_release_limits_locked(void)
 
 void kfas_freq_reset_session_locked(void)
 {
-	g_kfas.rendering_active = false;
+	WRITE_ONCE(g_kfas.rendering_active, false);
 	g_kfas.last_frame_ts_ns = 0;
 	g_kfas.perf_level = 500;
 	g_kfas.surplus_streak = 0;
 	g_kfas.jank_streak = 0;
-	g_kfas.ema_slow_streak = 0;
+	memset(g_kfas.win5_ns, 0, sizeof(g_kfas.win5_ns));
+	g_kfas.win5_idx = 0;
+	g_kfas.win5_cnt = 0;
+	g_kfas.rescue_armed_seq = 0;
+	g_kfas.rescue_active = false;
+	g_kfas.mid_frame_rescues = 0;
+	atomic_set(&g_kfas.frame_seq, 0);
 	g_kfas.down_cooldown = 0;
 	g_kfas.max_crit_busy_pct = 0;
 	g_kfas.cur_fps_x10 = 0;
@@ -332,12 +340,16 @@ static void kfas_update_target_fps_locked(u64 frame_ns)
 		/* Step up immediately (e.g. exiting 30fps cutscene) */
 		g_kfas.locked_fps = chosen;
 		g_kfas.fps_down_streak = 0;
+		g_kfas.win5_idx = 0;
+		g_kfas.win5_cnt = 0;
 	} else if (chosen < g_kfas.locked_fps) {
 		/* Require 3 consecutive slow windows before stepping down */
 		g_kfas.fps_down_streak++;
 		if (g_kfas.fps_down_streak >= 3) {
 			g_kfas.locked_fps = chosen;
 			g_kfas.fps_down_streak = 0;
+			g_kfas.win5_idx = 0;
+			g_kfas.win5_cnt = 0;
 		}
 	} else {
 		g_kfas.fps_down_streak = 0;
@@ -443,23 +455,110 @@ static void kfas_apply_perf_level_locked(const struct kfas_mode_cfg *cfg,
 	}
 }
 
+void kfas_freq_on_mid_rescue_locked(void)
+{
+	const struct kfas_mode_cfg *cfg = &g_kfas.mode_cfg[g_kfas.mode];
+	u32 i;
+
+	if (!g_kfas.freq_inited || !g_kfas.session_active ||
+	    !g_kfas.rendering_active)
+		return;
+
+	/* Respect soft thermal guardrail with a narrow hysteresis band */
+	if (cfg->temp_thresh_mc > 0 &&
+	    g_kfas.last_cpu_temp_mc > cfg->temp_thresh_mc + 3000)
+		return;
+
+	g_kfas.rescue_active = true;
+	g_kfas.mid_frame_rescues++;
+
+	/*
+	 * Mid-frame stall ceiling lift (concept adapted from open-source
+	 * MiCode perfmgr intra-frame hrtimer timeout rescue):
+	 *  - Immediately lift CPU max_khz ceilings WITHOUT forcing min_khz up
+	 *    or permanently mutating perf_level.
+	 *  - If the render/game threads are actively CPU-stalled, WALT ramps
+	 *    to peak OPP right away instead of waiting for queueBuffer.
+	 *  - If the frame is merely an idle VSync beat or static screen, WALT
+	 *    keeps clocks idle with zero wasted power and zero perf ratchet.
+	 */
+	for (i = 0; i < g_kfas.nr_clusters; i++) {
+		struct kfas_cluster *cl = &g_kfas.clusters[i];
+		unsigned int max_khz = FREQ_QOS_MAX_DEFAULT_VALUE;
+
+		if (g_kfas.nr_clusters > 1 && i == 0) {
+			u32 little_cap = (g_kfas.mode == KFAS_MODE_POWERSAVE) ? 660 :
+					 (g_kfas.mode == KFAS_MODE_BALANCE) ? 780 :
+					 (g_kfas.mode == KFAS_MODE_PERFORMANCE) ? 850 : 920;
+
+			max_khz = kfas_pick_opp(cl, little_cap,
+						cfg->little_floor_khz);
+		} else if (i == g_kfas.nr_clusters - 1 &&
+			   g_kfas.nr_clusters >= 3 && !cfg->prime_enable) {
+			max_khz = kfas_pick_opp(cl, 550, 0);
+		}
+
+		kfas_cluster_set_limits(cl, cl->cur_min_khz, max_khz);
+	}
+}
+
+void kfas_freq_arm_rescue_locked(void)
+{
+	u64 budget_ns, margin_ns, deadline_ns, now_ns, elapsed_ns, rem_ns;
+
+	if (!g_kfas.session_active || !g_kfas.rendering_active ||
+	    g_kfas.last_frame_ts_ns == 0)
+		return;
+
+	budget_ns = div_u64(NSEC_PER_SEC, max_t(u32, 15, g_kfas.locked_fps));
+	/*
+	 * Target-FPS-adaptive intra-frame stall deadline (~1.5x budget, margin
+	 * clamped to 2.2..12ms): ~10.4ms@144, ~12.5ms@120, ~16.7ms@90,
+	 * ~25ms@60, ~45.3ms@30. Sits above normal VSync jitter while firing
+	 * before a stalled frame misses a second scanout.
+	 */
+	margin_ns = clamp_t(u64, budget_ns / 2, 2200000ULL, 12000000ULL);
+	deadline_ns = budget_ns + margin_ns;
+
+	now_ns = ktime_get_mono_fast_ns();
+	elapsed_ns = now_ns > g_kfas.last_frame_ts_ns ?
+		     (now_ns - g_kfas.last_frame_ts_ns) : 0;
+
+	g_kfas.rescue_armed_seq = (u32)atomic_read(&g_kfas.frame_seq);
+	g_kfas.rescue_active = false;
+
+	if (elapsed_ns >= deadline_ns) {
+		hrtimer_cancel(&g_kfas.rescue_timer);
+		kfas_freq_on_mid_rescue_locked();
+		return;
+	}
+
+	rem_ns = deadline_ns - elapsed_ns;
+	hrtimer_start(&g_kfas.rescue_timer, ns_to_ktime(rem_ns),
+		      HRTIMER_MODE_REL);
+}
+
 void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s)
 {
 	const struct kfas_mode_cfg *cfg = &g_kfas.mode_cfg[g_kfas.mode];
 	struct kfas_gpu_snap gpu;
 	u64 budget_ns, tol_ns, tol_min_ns, jank_ns, ema_jank_ns;
+	u64 win5_budget_ns, win5_limit_ns, win5_sum_ns = 0;
 	u64 exec_ceil_ns, exec_hold_ns, ema_exec_ns;
 	u32 frame_us, exec_us, delay_us, dq_us, prev_ema_frame_us;
 	u32 fps_x10, temp_mc, margin, tol_pct, ema_tol_pct, ema_jank_us;
+	u32 win5_tol_pct, newest_slot;
 	u32 exec_ceil_pct, exec_hold_pct, crit_busy;
 	enum kfas_bottleneck bn = KFAS_BN_OK;
 	bool severe = false;
-	bool frame_missed, exec_high, exec_hold;
+	bool single_missed, win5_missed = false, frame_missed;
+	bool exec_high, exec_hold;
 
 	if (!g_kfas.freq_inited && kfas_freq_ensure_init_locked() != 0)
 		return;
 
-	g_kfas.rendering_active = true;
+	WRITE_ONCE(g_kfas.rendering_active, true);
+	g_kfas.rescue_active = false;
 	g_kfas.last_frame_ts_ns = s->ts_ns;
 	g_kfas.render_tid = s->tid;
 
@@ -493,18 +592,19 @@ void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s)
 	margin = min_t(u32, 30U, cfg->margin_pct);
 
 	/*
-	 * VSync-aware frame pressure classification:
+	 * VSync-aware single-frame + 5-frame sliding window classification:
 	 *
 	 * On triple-buffered VSync pipelines, Surface::queueBuffer intervals
 	 * naturally oscillate +/-10-14% around budget_ns (e.g. 7.5ms / 9.1ms
-	 * pairs at locked 120 FPS) without missing scanout. Classify real
-	 * slips and proactive CPU pressure across all 4 modes:
-	 *  - jank_ns:      budget_ns + mode-scaled phase jitter tolerance
-	 *  - ema_jank_us:  sustained drift requiring >=3 consecutive slow
-	 *                  frames so 1 isolated 16ms VSync tick cannot ratchet
-	 *                  perf_level to 1000 via decaying EMA tail
+	 * pairs at locked 120 FPS) without missing scanout:
+	 *  - single_missed: frame_ns > budget_ns + mode-scaled phase tolerance
+	 *  - win5_missed:   5-frame cumulative deficit catches sustained subtle
+	 *                   FPS sag (even when alternating VSync jitter stays
+	 *                   under single_missed) without false-triggering on
+	 *                   symmetric VSync oscillation (concept adapted from
+	 *                   open-source MiCode perfmgr FRAME_UNIT + load_reset)
 	 *  - exec_ceil/hold: combines render-thread exec_ns AND heaviest
-	 *                  critical thread (e.g. UnityMain) live busy%
+	 *                   critical thread (e.g. UnityMain) live busy%
 	 */
 	tol_pct = margin >= 14 ? 10 : (margin >= 10 ? 12 : (margin >= 6 ? 14 : 16));
 	tol_min_ns = margin >= 14 ? 850000ULL :
@@ -517,11 +617,27 @@ void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s)
 	ema_jank_ns = div_u64(budget_ns * (100U + ema_tol_pct), 100U);
 	ema_jank_us = (u32)div_u64(ema_jank_ns, 1000U);
 
-	if (s->frame_ns > ema_jank_ns)
-		g_kfas.ema_slow_streak = min_t(u32, 32,
-					       g_kfas.ema_slow_streak + 1);
-	else
-		g_kfas.ema_slow_streak = 0;
+	newest_slot = g_kfas.win5_idx;
+	g_kfas.win5_ns[newest_slot] = s->frame_ns;
+	g_kfas.win5_idx = (newest_slot + 1) % KFAS_WIN5_SIZE;
+	if (g_kfas.win5_cnt < KFAS_WIN5_SIZE)
+		g_kfas.win5_cnt++;
+
+	win5_tol_pct = margin >= 14 ? 4 :
+		       (margin >= 10 ? 5 :
+			(margin >= 6 ? 6 : 8));
+	win5_budget_ns = budget_ns * KFAS_WIN5_SIZE;
+	win5_limit_ns = div_u64(win5_budget_ns * (100U + win5_tol_pct), 100U);
+
+	single_missed = (s->frame_ns > jank_ns);
+	if (!single_missed && g_kfas.win5_cnt == KFAS_WIN5_SIZE) {
+		u32 wi;
+
+		for (wi = 0; wi < KFAS_WIN5_SIZE; wi++)
+			win5_sum_ns += g_kfas.win5_ns[wi];
+		win5_missed = (win5_sum_ns > win5_limit_ns) &&
+			      (s->frame_ns > budget_ns);
+	}
 
 	exec_ceil_pct = clamp_t(u32, 84U - margin, 54U, 82U);
 	exec_hold_pct = exec_ceil_pct - 10U;
@@ -530,9 +646,7 @@ void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s)
 	ema_exec_ns = (u64)g_kfas.ema_exec_us * 1000ULL;
 	crit_busy = g_kfas.max_crit_busy_pct;
 
-	frame_missed = (s->frame_ns > jank_ns) ||
-		       (g_kfas.ema_frame_us > ema_jank_us &&
-			g_kfas.ema_slow_streak >= 3);
+	frame_missed = single_missed || win5_missed;
 	exec_high = (ema_exec_ns > exec_ceil_ns) ||
 		    (crit_busy > exec_ceil_pct);
 	exec_hold = (ema_exec_ns >= exec_hold_ns) ||
@@ -597,12 +711,18 @@ void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s)
 
 		g_kfas.surplus_streak = 0;
 		if (frame_missed) {
-			u64 over_ns = s->frame_ns > budget_ns ?
-				      (s->frame_ns - budget_ns) : 0;
+			u64 cur_over_ns = s->frame_ns > budget_ns ?
+					  (s->frame_ns - budget_ns) : 0;
+			u64 avg_over_ns = (win5_missed &&
+					   win5_sum_ns > win5_budget_ns) ?
+					  div_u64(win5_sum_ns - win5_budget_ns,
+						  KFAS_WIN5_SIZE) : 0;
+			u64 over_ns = max(cur_over_ns, avg_over_ns);
 			u32 over_pm = (u32)min_t(u64, 1500ULL,
 						 div64_u64(over_ns * 1000ULL,
 							   budget_ns));
-			bool isolated_tick = (g_kfas.jank_streak == 0 &&
+			bool isolated_tick = (!win5_missed &&
+					      g_kfas.jank_streak == 0 &&
 					      prev_ema_frame_us <= ema_jank_us &&
 					      s->frame_ns <=
 					      div_u64(budget_ns * 215, 100U));
@@ -687,17 +807,48 @@ void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s)
 			u32 step = clamp_t(u32,
 					   (head_pm * cfg->down_gain) / 300,
 					   6, 22);
+			u32 keep_streak;
+
+			/*
+			 * Level-adaptive descent pacing: shed expensive high-
+			 * voltage headroom faster when perf_level is high, and
+			 * probe gently near the low-frequency stability knee.
+			 */
+			if (g_kfas.perf_level >= 700) {
+				step = min_t(u32, 36U, (step * 3) / 2);
+				keep_streak = (cfg->down_hold_frames * 2) / 3;
+			} else if (g_kfas.perf_level < 400) {
+				step = max_t(u32, 4U, (step * 3) / 4);
+				keep_streak = cfg->down_hold_frames / 4;
+			} else {
+				keep_streak = cfg->down_hold_frames / 2;
+			}
 
 			if (g_kfas.perf_level > step)
 				g_kfas.perf_level -= step;
 			else
 				g_kfas.perf_level = 0;
 
-			/* Keep partial streak for smooth gradual descent */
-			g_kfas.surplus_streak = cfg->down_hold_frames / 2;
+			g_kfas.surplus_streak = keep_streak;
 		}
 		break;
 	}
+	}
+
+	/*
+	 * Anti-windup load_reset after acting on a frame miss:
+	 *  - win5_missed: reset the 5-frame integrator to budget_ns so stale
+	 *    pre-boost frames cannot immediately re-trigger on the next frame.
+	 *  - single_missed: replace only this handled spike slot with budget_ns
+	 *    so a single isolated spike does not linger across the next 4 frames.
+	 */
+	if (win5_missed) {
+		u32 wi;
+
+		for (wi = 0; wi < KFAS_WIN5_SIZE; wi++)
+			g_kfas.win5_ns[wi] = budget_ns;
+	} else if (single_missed) {
+		g_kfas.win5_ns[newest_slot] = budget_ns;
 	}
 
 	/* Optional soft thermal guardrail */

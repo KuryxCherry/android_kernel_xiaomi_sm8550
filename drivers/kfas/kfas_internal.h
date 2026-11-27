@@ -9,6 +9,7 @@
 #include <linux/cpufreq.h>
 #include <linux/cpumask.h>
 #include <linux/fs.h>
+#include <linux/hrtimer.h>
 #include <linux/kernel.h>
 #include <linux/kfas.h>
 #include <linux/kobject.h>
@@ -24,7 +25,7 @@
 #include <linux/uprobes.h>
 #include <linux/workqueue.h>
 
-#define KFAS_VERSION		"1.2.0"
+#define KFAS_VERSION		"1.2.1"
 
 #define KFAS_MAX_CLUSTERS	4
 #define KFAS_MAX_OPPS		64
@@ -33,6 +34,7 @@
 #define KFAS_RING_SIZE		64
 #define KFAS_RING_MASK		(KFAS_RING_SIZE - 1)
 #define KFAS_FPS_WINDOW		32
+#define KFAS_WIN5_SIZE		5
 #define KFAS_SURFACE_SLOTS	8
 #define KFAS_DQ_SLOTS		16
 #define KFAS_WAKE_SLOTS		8
@@ -177,10 +179,12 @@ struct kfas_state {
 	struct mutex ctrl_mutex;
 	struct workqueue_struct *wq;
 	struct work_struct frame_work;
+	struct work_struct rescue_work;
 	struct work_struct exit_work;
 	struct delayed_work idle_work;
 	struct delayed_work place_work;
 	struct delayed_work daily_work;
+	struct hrtimer rescue_timer;
 
 	/* Master configuration */
 	bool enabled;
@@ -224,6 +228,7 @@ struct kfas_state {
 	u32 ring_tail;
 	u64 frames_total;
 	u64 frames_dropped_ring;
+	atomic_t frame_seq;
 	struct kfas_surface_slot surfaces[KFAS_SURFACE_SLOTS];
 	u64 dominant_surface;
 
@@ -237,7 +242,12 @@ struct kfas_state {
 	u32 perf_level;		/* 0..1000 normalized compute headroom */
 	u32 surplus_streak;
 	u32 jank_streak;
-	u32 ema_slow_streak;
+	u64 win5_ns[KFAS_WIN5_SIZE];
+	u32 win5_idx;
+	u32 win5_cnt;
+	u32 rescue_armed_seq;
+	bool rescue_active;
+	u64 mid_frame_rescues;
 	u32 down_cooldown;
 	u32 max_crit_busy_pct;
 	u32 cur_fps_x10;	/* EMA fps * 10 */
@@ -306,6 +316,8 @@ int kfas_freq_ensure_init_locked(void);
 void kfas_freq_reset_session_locked(void);
 void kfas_freq_release_limits_locked(void);
 void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s);
+void kfas_freq_arm_rescue_locked(void);
+void kfas_freq_on_mid_rescue_locked(void);
 
 /* kfas_place.c */
 void kfas_place_init(void);
@@ -322,6 +334,10 @@ kfas_managed_find_prev(const struct kfas_managed_tid *arr, u32 nr, pid_t tid);
 bool kfas_task_apply_uclamp(struct task_struct *task, u32 umin, u32 umax,
 			    bool reset_on_fork);
 void kfas_managed_restore_entry_locked(struct kfas_managed_tid *m);
+void kfas_managed_reconcile_locked(struct kfas_managed_tid *old_arr,
+				   u32 old_nr,
+				   const struct kfas_managed_tid *new_arr,
+				   u32 new_nr);
 
 /* kfas_daily.c */
 void kfas_daily_init(void);

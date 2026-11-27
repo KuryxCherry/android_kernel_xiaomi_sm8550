@@ -2,10 +2,12 @@
 /*
  * Kernel Frame-Aware Scheduler (KFAS) - Core Lifecycle & WALT Bridge
  */
+#include <linux/hrtimer.h>
 #include <linux/init.h>
 #include <linux/kfas.h>
 #include <linux/module.h>
 #include <linux/pid.h>
+#include <linux/pid_namespace.h>
 #include <linux/rcupdate.h>
 #include <linux/sched/signal.h>
 #include <linux/sched/task.h>
@@ -159,6 +161,7 @@ static void kfas_frame_work_fn(struct work_struct *work)
 	}
 
 	if (processed) {
+		kfas_freq_arm_rescue_locked();
 		mod_delayed_work(g_kfas.wq, &g_kfas.idle_work,
 				 msecs_to_jiffies(KFAS_IDLE_TIMEOUT_MS));
 		if (!was_rendering && g_kfas.placement_enable)
@@ -168,13 +171,35 @@ static void kfas_frame_work_fn(struct work_struct *work)
 	mutex_unlock(&g_kfas.ctrl_mutex);
 }
 
+static enum hrtimer_restart kfas_rescue_timer_cb(struct hrtimer *timer)
+{
+	if (READ_ONCE(g_kfas.session_active) &&
+	    READ_ONCE(g_kfas.rendering_active) &&
+	    g_kfas.wq)
+		queue_work(g_kfas.wq, &g_kfas.rescue_work);
+	return HRTIMER_NORESTART;
+}
+
+static void kfas_rescue_work_fn(struct work_struct *work)
+{
+	mutex_lock(&g_kfas.ctrl_mutex);
+	if (g_kfas.session_active && g_kfas.rendering_active &&
+	    !g_kfas.rescue_active &&
+	    (u32)atomic_read(&g_kfas.frame_seq) == g_kfas.rescue_armed_seq)
+		kfas_freq_on_mid_rescue_locked();
+	mutex_unlock(&g_kfas.ctrl_mutex);
+}
+
 static void kfas_idle_work_fn(struct work_struct *work)
 {
 	mutex_lock(&g_kfas.ctrl_mutex);
 	if (g_kfas.session_active && g_kfas.rendering_active) {
-		g_kfas.rendering_active = false;
+		WRITE_ONCE(g_kfas.rendering_active, false);
+		hrtimer_cancel(&g_kfas.rescue_timer);
+		g_kfas.rescue_active = false;
 		g_kfas.jank_streak = 0;
-		g_kfas.ema_slow_streak = 0;
+		g_kfas.win5_idx = 0;
+		g_kfas.win5_cnt = 0;
 		g_kfas.surplus_streak = 0;
 		g_kfas.down_cooldown = 0;
 		/* Relax ceilings & core_ctl during loading/paused screens */
@@ -244,7 +269,7 @@ int kfas_session_start_locked(pid_t pid, const u32 *fps_list, u32 nr_fps)
 		kfas_session_stop_locked();
 
 	rcu_read_lock();
-	leader = pid_task(find_vpid(pid), PIDTYPE_PID);
+	leader = pid_task(find_pid_ns(pid, &init_pid_ns), PIDTYPE_PID);
 	if (leader && pid_alive(leader))
 		get_task_struct(leader);
 	else
@@ -267,7 +292,7 @@ int kfas_session_start_locked(pid_t pid, const u32 *fps_list, u32 nr_fps)
 	atomic_set(&g_kfas.exiting_pid, 0);
 	kfas_freq_reset_session_locked();
 	kfas_place_session_start_locked();
-	g_kfas.session_active = true;
+	WRITE_ONCE(g_kfas.session_active, true);
 	mutex_unlock(&g_kfas.ctrl_mutex);
 
 	ret = kfas_uprobe_attach_locked(leader);
@@ -275,11 +300,14 @@ int kfas_session_start_locked(pid_t pid, const u32 *fps_list, u32 nr_fps)
 
 	if (ret) {
 		mutex_lock(&g_kfas.ctrl_mutex);
-		g_kfas.session_active = false;
-		g_kfas.rendering_active = false;
+		WRITE_ONCE(g_kfas.session_active, false);
+		WRITE_ONCE(g_kfas.rendering_active, false);
+		g_kfas.rescue_active = false;
 		mutex_unlock(&g_kfas.ctrl_mutex);
 
 		cancel_work_sync(&g_kfas.frame_work);
+		hrtimer_cancel(&g_kfas.rescue_timer);
+		cancel_work_sync(&g_kfas.rescue_work);
 		cancel_delayed_work_sync(&g_kfas.idle_work);
 		cancel_delayed_work_sync(&g_kfas.place_work);
 
@@ -300,17 +328,21 @@ void kfas_session_stop_locked(void)
 
 	/*
 	 * 1. Detach uprobes first so no new frame callbacks fire.
-	 * 2. Mark session inactive & drain pending works outside ctrl_mutex.
+	 * 2. Mark session inactive & drain pending works/hrtimer outside
+	 *    ctrl_mutex (frame_work -> rescue_timer -> rescue_work order).
 	 * 3. Restore all FreqQoS, core_ctl, WALT pipeline, and uclamp state.
 	 */
 	kfas_uprobe_detach_locked();
 
 	mutex_lock(&g_kfas.ctrl_mutex);
-	g_kfas.session_active = false;
-	g_kfas.rendering_active = false;
+	WRITE_ONCE(g_kfas.session_active, false);
+	WRITE_ONCE(g_kfas.rendering_active, false);
+	g_kfas.rescue_active = false;
 	mutex_unlock(&g_kfas.ctrl_mutex);
 
 	cancel_work_sync(&g_kfas.frame_work);
+	hrtimer_cancel(&g_kfas.rescue_timer);
+	cancel_work_sync(&g_kfas.rescue_work);
 	cancel_delayed_work_sync(&g_kfas.idle_work);
 	cancel_delayed_work_sync(&g_kfas.place_work);
 
@@ -341,10 +373,14 @@ static int __init kfas_init(void)
 		return -ENOMEM;
 
 	INIT_WORK(&g_kfas.frame_work, kfas_frame_work_fn);
+	INIT_WORK(&g_kfas.rescue_work, kfas_rescue_work_fn);
 	INIT_WORK(&g_kfas.exit_work, kfas_exit_work_fn);
 	INIT_DELAYED_WORK(&g_kfas.idle_work, kfas_idle_work_fn);
 	INIT_DELAYED_WORK(&g_kfas.place_work, kfas_place_work_fn);
 	INIT_DELAYED_WORK(&g_kfas.daily_work, kfas_daily_work_fn);
+	hrtimer_init(&g_kfas.rescue_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	g_kfas.rescue_timer.function = kfas_rescue_timer_cb;
+	atomic_set(&g_kfas.frame_seq, 0);
 
 	kfas_gpu_init();
 	kfas_place_init();
