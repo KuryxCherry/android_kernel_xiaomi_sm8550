@@ -60,7 +60,22 @@ static char default_governor[CPUFREQ_NAME_LEN];
  */
 static struct cpufreq_driver *cpufreq_driver;
 static DEFINE_PER_CPU(struct cpufreq_policy *, cpufreq_cpu_data);
+static DEFINE_PER_CPU(unsigned int, scaling_min_freq_limit);
 static DEFINE_RWLOCK(cpufreq_driver_lock);
+
+static unsigned int get_policy_min_freq_limit(const struct cpufreq_policy *policy)
+{
+	return READ_ONCE(per_cpu(scaling_min_freq_limit, policy->cpu));
+}
+
+static void set_policy_min_freq_limit(const struct cpufreq_policy *policy,
+				      unsigned int limit)
+{
+	unsigned int cpu;
+
+	for_each_cpu(cpu, policy->related_cpus)
+		WRITE_ONCE(per_cpu(scaling_min_freq_limit, cpu), limit);
+}
 
 static DEFINE_STATIC_KEY_FALSE(cpufreq_freq_invariance);
 bool cpufreq_supports_freq_invariance(void)
@@ -711,6 +726,14 @@ show_one(cpuinfo_transition_latency, cpuinfo.transition_latency);
 show_one(scaling_min_freq, min);
 show_one(scaling_max_freq, max);
 
+static ssize_t show_scaling_min_freq_limit(struct cpufreq_policy *policy,
+					   char *buf)
+{
+	unsigned int limit = get_policy_min_freq_limit(policy);
+
+	return sprintf(buf, "%u\n", limit ? limit : policy->cpuinfo.max_freq);
+}
+
 __weak unsigned int arch_freq_get_on_cpu(int cpu)
 {
 	return 0;
@@ -751,6 +774,24 @@ static ssize_t store_##file_name					\
 
 store_one(scaling_min_freq, min);
 store_one(scaling_max_freq, max);
+
+static ssize_t store_scaling_min_freq_limit(struct cpufreq_policy *policy,
+					    const char *buf, size_t count)
+{
+	unsigned int val;
+	int ret;
+
+	ret = kstrtouint(buf, 0, &val);
+	if (ret)
+		return ret;
+
+	if (val >= policy->cpuinfo.max_freq)
+		val = 0;
+
+	set_policy_min_freq_limit(policy, val);
+	refresh_frequency_limits(policy);
+	return count;
+}
 
 /*
  * show_cpuinfo_cur_freq - current CPU frequency as detected by hardware
@@ -937,6 +978,7 @@ cpufreq_freq_attr_ro(bios_limit);
 cpufreq_freq_attr_ro(related_cpus);
 cpufreq_freq_attr_ro(affected_cpus);
 cpufreq_freq_attr_rw(scaling_min_freq);
+cpufreq_freq_attr_rw(scaling_min_freq_limit);
 cpufreq_freq_attr_rw(scaling_max_freq);
 cpufreq_freq_attr_rw(scaling_governor);
 cpufreq_freq_attr_rw(scaling_setspeed);
@@ -946,6 +988,7 @@ static struct attribute *default_attrs[] = {
 	&cpuinfo_max_freq.attr,
 	&cpuinfo_transition_latency.attr,
 	&scaling_min_freq.attr,
+	&scaling_min_freq_limit.attr,
 	&scaling_max_freq.attr,
 	&affected_cpus.attr,
 	&related_cpus.attr,
@@ -2555,6 +2598,7 @@ static int cpufreq_set_policy(struct cpufreq_policy *policy,
 {
 	struct cpufreq_policy_data new_data;
 	struct cpufreq_governor *old_gov;
+	unsigned int min_limit;
 	int ret;
 
 	memcpy(&new_data.cpuinfo, &policy->cpuinfo, sizeof(policy->cpuinfo));
@@ -2566,6 +2610,10 @@ static int cpufreq_set_policy(struct cpufreq_policy *policy,
 	 */
 	new_data.min = freq_qos_read_value(&policy->constraints, FREQ_QOS_MIN);
 	new_data.max = freq_qos_read_value(&policy->constraints, FREQ_QOS_MAX);
+
+	min_limit = get_policy_min_freq_limit(policy);
+	if (min_limit && new_data.min > min_limit)
+		new_data.min = min_limit;
 
 	pr_debug("setting new policy for CPU %u: %u - %u kHz\n",
 		 new_data.cpu, new_data.min, new_data.max);
