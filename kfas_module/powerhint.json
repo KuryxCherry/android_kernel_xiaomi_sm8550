@@ -39,7 +39,7 @@
       "Path": "/sys/devices/system/cpu/cpufreq/policy0/walt/down_rate_limit_us",
       "Values": [
         "2000",
-        "20000"
+        "10000"
       ],
       "ResetOnInit": true
     },
@@ -391,12 +391,6 @@
     },
     {
       "PowerHint": "INTERACTION",
-      "Node": "UclampTAMin",
-      "Duration": 0,
-      "Value": "15"
-    },
-    {
-      "PowerHint": "INTERACTION",
       "Node": "UclampTALatency",
       "Duration": 0,
       "Value": "1"
@@ -423,7 +417,7 @@
       "PowerHint": "INTERACTIVE",
       "Node": "CPULittleClusterDownRateLimit",
       "Duration": 0,
-      "Value": "20000"
+      "Value": "10000"
     },
     {
       "PowerHint": "INTERACTIVE",

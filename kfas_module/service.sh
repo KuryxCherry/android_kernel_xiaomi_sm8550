@@ -56,6 +56,24 @@ until [ "$(getprop sys.boot_completed)" = "1" ] && [ -d /sdcard/Android ]; do
     sleep 2
 done
 
+# 2b. Apply verified SM8550 daily-use WALT / core_ctl / cgroup / min_freq_limit tuning
+apply_daily_power_tuning() {
+    [ -w /proc/sys/walt/sched_conservative_pl ] && echo 1 > /proc/sys/walt/sched_conservative_pl 2>/dev/null
+    [ -w /sys/devices/system/cpu/cpufreq/policy0/walt/rtg_boost_freq ] && echo 0 > /sys/devices/system/cpu/cpufreq/policy0/walt/rtg_boost_freq 2>/dev/null
+    [ -w /sys/devices/system/cpu/cpufreq/policy0/walt/down_rate_limit_us ] && echo 10000 > /sys/devices/system/cpu/cpufreq/policy0/walt/down_rate_limit_us 2>/dev/null
+    [ -w /sys/devices/system/cpu/cpufreq/policy3/walt/down_rate_limit_us ] && echo 10000 > /sys/devices/system/cpu/cpufreq/policy3/walt/down_rate_limit_us 2>/dev/null
+    [ -w /sys/devices/system/cpu/cpu3/core_ctl/min_cpus ] && echo 3 > /sys/devices/system/cpu/cpu3/core_ctl/min_cpus 2>/dev/null
+    [ -w /sys/devices/system/cpu/cpu7/core_ctl/busy_up_thres ] && echo 80 > /sys/devices/system/cpu/cpu7/core_ctl/busy_up_thres 2>/dev/null
+    [ -w /sys/devices/system/cpu/cpu7/core_ctl/busy_down_thres ] && echo 50 > /sys/devices/system/cpu/cpu7/core_ctl/busy_down_thres 2>/dev/null
+    [ -w /dev/cpuctl/background/cpu.uclamp.max ] && echo 45 > /dev/cpuctl/background/cpu.uclamp.max 2>/dev/null
+    [ -w /dev/cpuctl/system-background/cpu.uclamp.max ] && echo 45 > /dev/cpuctl/system-background/cpu.uclamp.max 2>/dev/null
+    [ -w /dev/cpuset/restricted/cpus ] && echo 0-2 > /dev/cpuset/restricted/cpus 2>/dev/null
+    [ -w /sys/devices/system/cpu/cpufreq/policy0/scaling_min_freq_limit ] && echo 1344000 > /sys/devices/system/cpu/cpufreq/policy0/scaling_min_freq_limit 2>/dev/null
+    [ -w /sys/devices/system/cpu/cpufreq/policy3/scaling_min_freq_limit ] && echo 1785600 > /sys/devices/system/cpu/cpufreq/policy3/scaling_min_freq_limit 2>/dev/null
+    [ -w /sys/devices/system/cpu/cpufreq/policy7/scaling_min_freq_limit ] && echo 1843200 > /sys/devices/system/cpu/cpufreq/policy7/scaling_min_freq_limit 2>/dev/null
+}
+apply_daily_power_tuning
+
 mkdir -p "$USER_DIR"
 [ -f "$USER_DIR/games.conf" ] || cp -af "$MODDIR/games.conf" "$USER_DIR/games.conf"
 

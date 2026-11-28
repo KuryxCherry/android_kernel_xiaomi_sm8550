@@ -1,5 +1,5 @@
 #!/system/bin/sh
-ui_print "- Installing KFAS Controller v1.2.0 (WebUI + Zero-Mount PowerHint)"
+ui_print "- Installing KFAS Controller v1.2.1 (WebUI + Zero-Mount PowerHint + Daily Tuning)"
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 set_perm "$MODPATH/service.sh" 0 0 0755
 set_perm "$MODPATH/uninstall.sh" 0 0 0755
