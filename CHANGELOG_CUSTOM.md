@@ -21,13 +21,68 @@
 | **内存与 ZRAM** | **MGLRU** 默认启用且 `min_ttl_ms=1000`；移植上游 **Linux 6.6 LTS `zsmalloc`**（12 级 fullness 分组、可配置页链 `CONFIG_ZSMALLOC_CHAIN_SIZE=8`、简化锁模型与 `local_lock_t` 每核映射锁）；纯上游 **LZ4 v1.11.1**（已移除树外 `lz4armv8` NEON，原地解压自动路由 `safe_decode`，兼顾 ZRAM 高速与 EROFS 零报错）；默认 ZRAM 压缩 `lz4`；**ZRAM Writeback** 与内存追踪接口（默认不挂载 `backing_dev`，按需启用） | `CONFIG_LRU_GEN_ENABLED=y`、`mm/vmscan.c`、`mm/zsmalloc.c`、`CONFIG_ZSMALLOC_CHAIN_SIZE=8`、`lib/lz4/`、`CONFIG_ZRAM_DEF_COMP="lz4"`、`CONFIG_ZRAM_WRITEBACK=y`、`CONFIG_ZRAM_MEMORY_TRACKING=y` |
 | **省电与唤醒** | **RCU_LAZY** 默认启用；**省电工作队列**默认开启；唤醒/定时/PCI PME 省电微调；静默 AVC audit 与 Binder 调试日志 | `# CONFIG_RCU_LAZY_DEFAULT_OFF is not set`、`CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y`、`security/lsm_audit.c`、`drivers/android/binder.c` |
 | **存储与文件系统** | Kconfig 无损直接指定默认 I/O 调度器（`CONFIG_DEFAULT_IOSCHED="ssg"`）与块预读（`CONFIG_DEFAULT_READ_AHEAD_KB=128`，仅规范开机 `init`/`vendor_init` 非零写入，开机后完全自由调整）；内置 **Samsung SSG**（含 cgroup 前后台浅队列限流适配与完整 RCU/refcount 保护）与 **ADIOS v3.3.0** I/O 调度器（默认开机启用 **SSG**，与 `bfq` / `adios` 共存且随时可热切换）；F2FS 拥塞停顿缓解、增大最小 fsync 块数、缩短紧急 GC 休眠；NTFS3 读写支持 | `block/blk.h`、`block/elevator.c`、`block/blk-sysfs.c`、`block/ssg-*.{c,h}`、`block/adios.c`、`fs/f2fs/`、`CONFIG_NTFS3_FS=y` |
-| **调度优化** | 保持高通原生 `sched_walt` EAS 主干，合入 4 项 Linux 主线精准修复：去除 `do_idle()` 多余 `rmb()`、跳过 `rto_next_cpu()` 空推送、`migrate_misfit` 不污染均衡间隔、`_nohz_idle_balance` 优先小核升序扫描 | `kernel/sched/idle.c`、`kernel/sched/rt.c`、`kernel/sched/fair.c` |
+| **调度优化** | 保持高通原生 `sched_walt` EAS 主干；合入 4 项 Linux 主线精准修复（去除 `do_idle()` 多余 `rmb()`、跳过 `rto_next_cpu()` 空推送、`migrate_misfit` 不污染均衡间隔、`_nohz_idle_balance` 升序小核优先）；移植高通上游 WALT 修复与增强（`scaling_min/max_freq` 立即生效、MVP `mutex` 锁队列插队、MVP 防饿死节流、跨核迁移无锁读 cycle counter 修复、`ttwu_pending` 跳过 `newidle` 扫描、`nohz` 定时器限定 active CPU、pipeline 负载均衡防碰撞与 RCU 修复、`uclamp` 频导回调）；扩展同步 Binder `WALT_BINDER_MVP` 低延迟继承覆盖 AOSP/LineageOS 关键 UI 渲染链路 | `kernel/sched/{idle,rt,fair}.c`、`kernel/sched/walt/{cpufreq_walt,mvp_locking,walt,walt_cfs,walt_lb,walt_halt,core_ctl}.c`、`kernel/sched/walt/walt.h` |
 | **进程冻结（墓碑）** | 内建 **Re-Kernel v11.7**（Generic Netlink） | `drivers/rekernel/`、`CONFIG_REKERNEL=y` |
 | **架构与指令微调** | ARM64 `clear_page` 16 字节对齐、`copy_template` 流式预取、`list_lru` 无锁快路径 | `arch/arm64/lib/`、`mm/list_lru.c` |
 
 ---
 
 ## 二、详细变更日志（按时间倒序）
+
+### 2026-11-28
+
+- **`c92a22bda8`** — `sched/walt: extend WALT_BINDER_MVP inheritance for sync UI IPC`（**可按需调整项**）
+  - **改动文件**：`kernel/sched/walt/walt_cfs.c`
+  - **内容**：针对 AOSP/LineageOS 中 `RenderThread`、`wmshell.*`、`ll.splashscreen` 与 `top-app` 高优 UI 线程运行在 `SCHED_NORMAL`（`nice -4..-10`）而非 `SCHED_FIFO` 导致原生 `walt_binder_low_latency_set()` 漏判同步 UI Binder IPC 的盲区，仅对同步事务（`sync == true`，不触碰 `oneway` 异步事务）扩展 `WALT_LOW_LATENCY_BINDER` 触发条件（覆盖任意 RT 线程本身及 `prio <= DEFAULT_PRIO - 4` 的 `top-app` RTG / 关键 UI 动画线程），复用高通原生 `WALT_BINDER_MVP`（自带 3ms `WALT_MVP_SLICE`、`task_util < 325` 与 500ms/100ms MVP 节流保护，不强改 `SCHED_FIFO`）；并在 `binder_restore_priority_hook()` 中当 Binder 线程结束全部事务回到空闲等待时精准清除借出的 `WALT_LOW_LATENCY_BINDER` 标签。
+  - **回退**：`git revert c92a22bda8`。
+
+- **`b2b9f26eb8`** — `sched/walt: uclamp based frequency guidance`（**已合入可选项，可单独回退/对比**）
+  - **改动文件**：`kernel/sched/walt/walt.h`、`kernel/sched/walt/walt.c`
+  - **上游来源**：Qualcomm Innovation Center（CLO WALT，原作者：Ashay Jaiswal `<quic_ashayj@quicinc.com>`，`Change-Id: I2535a4327cb602859f51808ae9a2583624f1b2ab`）
+  - **内容**：在 `struct walt_rq` 中追踪每运行队列 `uclamp_limit[UCLAMP_CNT]`，当 `enqueue`/`dequeue` 导致队列 `uclamp_min` 或 `uclamp_max` 变化时立刻触发 `waltgov_run_callback(rq, WALT_CPUFREQ_UCLAMP)` 通知 `cpufreq_walt` 调频（仍受 `waltgov` 升降频限速约束），不必等待 16ms 窗口 rollover。若后续实测发现回调过密或功耗不理想，可直接单独回退本提交。
+  - **回退**：`git revert b2b9f26eb8`。
+
+- **`96c41e2a06`** — `sched/walt: fix RCU pd access and prevent pipeline task collisions`
+  - **改动文件**：`kernel/sched/walt/walt.c`、`kernel/sched/walt/walt_cfs.c`、`kernel/sched/walt/walt_lb.c`
+  - **上游来源**：Qualcomm Innovation Center（`LineageOS/android_kernel_qcom_sm8650` 提交 `9b17ab90d42e`、`0f8077d65503`、`ab41af2f79b1`）
+  - **内容**：`walt_init()` 中检查 `rd->pd` 改用 `rcu_access_pointer()` 避免非 RCU 读锁上下文误用 `rcu_dereference()`；`PIPELINE_FASTPATH` 放行 `p == rq->curr`；主动负载均衡 `need_active_lb()` 避免将 pipeline 任务迁移到当前正在跑另一 pipeline 任务的目标核。
+  - **回退**：`git revert 96c41e2a06`。
+
+- **`9ea92c4a77`** — `sched/walt: always return active cpu as nohz timer target`
+  - **改动文件**：`kernel/sched/walt/core_ctl.c`、`kernel/sched/walt/walt.h`、`kernel/sched/walt/walt_halt.c`
+  - **上游来源**：Qualcomm Innovation Center（`LineageOS/android_kernel_qcom_sm8650` 提交 `949b34305580`、`53e81c1e703e`，原作者：Ashay Jaiswal `<quic_ashayj@quicinc.com>`）
+  - **内容**：导出 `cpus_paused_by_us` 并在 `android_rvh_get_nohz_timer_target()` 中将未暂停核集合与 `cpu_active_mask` 求交集，杜绝将 nohz 定时器分派到 offline 核；在全活动核暂停时优先选择 `core_ctl` 暂停核而非外部冻结核。
+  - **回退**：`git revert 9ea92c4a77`。
+
+- **`5d9578f62e`** — `sched/walt: Skip newidle balance if a wakeup is pending on a cpu`
+  - **改动文件**：`kernel/sched/walt/walt_lb.c`
+  - **上游来源**：Qualcomm Innovation Center（`LineageOS/android_kernel_qcom_sm8650` 提交 `b8c74e807ad4`，并修正原提交 `done = 0` 指针笔误为 `*done = 0`）
+  - **内容**：当 `this_rq->ttwu_pending` 为真（当前核已有待唤醒任务）时跳过跨核 `walt_newidle_balance()` 扫描，降低唤醒延迟与无效空转开销。
+  - **回退**：`git revert 5d9578f62e`。
+
+- **`36879c4901`** — `sched/walt: Fix updating of task cpu cycles without rq lock`
+  - **改动文件**：`kernel/sched/walt/walt.c`
+  - **上游来源**：Qualcomm Technologies（`LineageOS/android_kernel_qcom_sm8650` 提交 `1c7d1d3a6b60`）
+  - **内容**：修复 `migrate_busy_time_subtraction()` 在未持有目标核 `rq->lock` 时调用 `update_task_cpu_cycles()` 并发修改目标核 `wrq->cycles` 与 `last_cc_update` 的竞态，改为在 `use_cycle_counter` 启用时直接调用 `qcom_cpufreq_get_cpu_cycle_counter(new_cpu)`。
+  - **回退**：`git revert 36879c4901`。
+
+- **`7da13eeff9`** — `sched/walt: add support for throttling MVP tasks`
+  - **改动文件**：`kernel/sched/walt/walt.h`、`kernel/sched/walt/walt.c`、`kernel/sched/walt/walt_cfs.c`
+  - **上游来源**：Qualcomm Innovation Center（`LineageOS/android_kernel_qcom_sm8650` 提交 `74ce9568e59f`，原作者：Ashay Jaiswal `<quic_ashayj@quicinc.com>`）
+  - **内容**：为每运行队列引入 MVP 防饿死节流机制（单核连续 MVP 执行超 `500ms` 时暂缓 MVP 抢占 `100ms` 放行普通 CFS 任务），并在 `walt_cfs_replace_next_task_fair()` 补齐节流到期自动解除检查，避免空闲唤醒场景下节流状态残留。
+  - **回退**：`git revert 7da13eeff9`。
+
+- **`6083cc6cfb`** — `sched/walt: move MVP task at front of mutex waiter`
+  - **改动文件**：`kernel/sched/walt/Makefile`、`kernel/sched/walt/mvp_locking.c`、`kernel/sched/walt/walt.h`、`kernel/sched/walt/walt.c`
+  - **上游来源**：Qualcomm Innovation Center（`LineageOS/android_kernel_qcom_sm8650` 提交 `23f22d68b272`）
+  - **内容**：挂载 `android_vh_alter_mutex_list_add` vendor hook，使 WALT MVP 任务（含 `WALT_BINDER_MVP` 与 `WALT_LL_PIPE_MVP`）在内核 `mutex` 阻塞等待队列中直接排到非 MVP 等待者之前，缓解锁竞争导致的优先级反转掉帧。
+  - **回退**：`git revert 6083cc6cfb`。
+
+- **`e13b58d6c9`** — `sched/walt: Honor scaling_min_freq/scaling_max_freq`
+  - **改动文件**：`kernel/sched/walt/cpufreq_walt.c`
+  - **上游来源**：Qualcomm Innovation Center（`LineageOS/android_kernel_qcom_sm8650` 提交 `c7920924ec33`，原作者：Shivnandan Kumar `<quic_shivnand@quicinc.com>`）
+  - **内容**：拆分 `__waltgov_update_next_freq()`，使 `waltgov_limits()` 在 `scaling_min_freq`/`scaling_max_freq` 变化时绕过 `up/down_rate_delay_ns` 限速立即执行频率切换。
+  - **回退**：`git revert e13b58d6c9`。
 
 ### 2026-11-26
 
@@ -149,7 +204,18 @@
 
 ---
 
-## 三、已评估但主动排除（未合入）的项（防重复踩坑）
+## 三、可选项与后续可调整清单（支持单项快速回退/验证）
+
+| 状态 | 特性 | Commit SHA | 说明与后续调整方式 |
+| :--- | :--- | :--- | :--- |
+| **已合入（可随时单撤）** | WALT `uclamp` 频导回调（`WALT_CPUFREQ_UCLAMP`） | `b2b9f26eb8` | 入队/出队 `rq` `uclamp` 变化即触发调频回调，响应更跟手；若实测功耗或抖频不理想，执行 `git revert b2b9f26eb8` 即可无损撤回 |
+| **已合入（可随时微调）** | 同步 Binder UI `WALT_BINDER_MVP` 补盲 | `c92a22bda8` | 覆盖 AOSP/LineageOS 同步 UI/RT Binder 链路，受 3ms 时间片与 500ms/100ms 节流保护；如需收紧/放宽触发门槛或撤回，直接调整或 `git revert c92a22bda8` |
+| **待观察（暂未合入）** | 同核竞争抢占优化（BORE / EEVDF 思路） | — | 仅影响同核 CFS 抢占顺序、不干涉 WALT 选核/调频；待当前版本实测确认重并发前台是否仍有痛点后再做 A/B 评估 |
+| **待观察（暂未合入）** | `/vendor/etc/powerhint.json` `INTERACTION` 参数 | — | 仅在当前原生状态实测抓到明确耗电/掉帧 trace 证据后再评估，不做盲目覆盖 |
+
+---
+
+## 四、已评估但主动排除（未合入）的项（防重复踩坑）
 
 1. **更换第三方魔改 Clang 工具链**：放弃。当前 ROM（LineageOS 24.0）与 `sm8550-modules` 及 YukiSU LKM（依赖 `vmlinux.btf` 与 `clang-cfi/.cfi_jt`）均针对 AOSP Clang 22.0.2 (`r596125`) 验证，换工具链易导致 CFI/BTF 不兼容不开机。
 2. **源码内置 KernelSU/YukiSU**：放弃。保持主内核纯净，使用 `init_boot` LKM 方案实现内核与 Root 解耦，换内核不掉 Root 且便于上游 LTS 合并。
@@ -158,7 +224,7 @@
 
 ---
 
-## 四、排错与快速回退速查
+## 五、排错与快速回退速查
 
 - **按单项精确回退**：在 Git 仓库中直接执行 `git revert <Commit SHA>` 即可干净撤销对应特性。
 - **常见运行时验证命令（手机 Root 终端）**：
