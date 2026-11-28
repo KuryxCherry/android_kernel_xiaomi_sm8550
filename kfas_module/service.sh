@@ -4,6 +4,40 @@ KFAS_DIR="/sys/kernel/kfas"
 USER_DIR="/sdcard/Android/kfas"
 ERRLOG="$USER_DIR/kfas_error.log"
 
+# 0. Apply tuned PowerHAL powerhint.json transiently without leaving any mount
+#    PowerHAL (libperfmgr) parses /vendor/etc/powerhint.json once at startup
+#    and keeps it in memory; unmounting immediately leaves zero mount traces
+#    in PID 1 and Android 17 zygote_next isolated mount namespaces.
+apply_powerhint_clean() {
+    src="$MODDIR/powerhint.json"
+    dst="/vendor/etc/powerhint.json"
+    [ -f "$src" ] && [ -f "$dst" ] || return 0
+    chmod 0644 "$src" 2>/dev/null || true
+    chcon u:object_r:vendor_configs_file:s0 "$src" 2>/dev/null || true
+    nsenter -t 1 -m -- umount "$dst" 2>/dev/null || true
+    if nsenter -t 1 -m -- mount -o bind,ro "$src" "$dst" 2>/dev/null; then
+        stop vendor.power-hal-aidl 2>/dev/null || true
+        i=0
+        while [ "$i" -lt 10 ]; do
+            [ "$(getprop init.svc.vendor.power-hal-aidl)" = "stopped" ] && break
+            sleep 0.1
+            i=$((i + 1))
+        done
+        start vendor.power-hal-aidl 2>/dev/null || true
+        i=0
+        while [ "$i" -lt 30 ]; do
+            if [ "$(getprop init.svc.vendor.power-hal-aidl)" = "running" ] && \
+               dumpsys android.hardware.power.IPower/default 2>/dev/null | grep -q 'CPULittleClusterMinFreq'; then
+                break
+            fi
+            sleep 0.1
+            i=$((i + 1))
+        done
+        nsenter -t 1 -m -- umount "$dst" 2>/dev/null || nsenter -t 1 -m -- umount -l "$dst" 2>/dev/null || true
+    fi
+}
+apply_powerhint_clean
+
 # 1. Immediately expose Scene powercfg bridge & /dev/kfas/mode BEFORE boot_completed
 if [ -d "$KFAS_DIR" ]; then
     mkdir -p /dev/kfas
