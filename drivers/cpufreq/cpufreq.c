@@ -60,12 +60,12 @@ static char default_governor[CPUFREQ_NAME_LEN];
  */
 static struct cpufreq_driver *cpufreq_driver;
 static DEFINE_PER_CPU(struct cpufreq_policy *, cpufreq_cpu_data);
-static DEFINE_PER_CPU(unsigned int, scaling_min_freq_limit);
+static DEFINE_PER_CPU(unsigned int, cpufreq_min_freq_limit);
 static DEFINE_RWLOCK(cpufreq_driver_lock);
 
 static unsigned int get_policy_min_freq_limit(const struct cpufreq_policy *policy)
 {
-	return READ_ONCE(per_cpu(scaling_min_freq_limit, policy->cpu));
+	return READ_ONCE(per_cpu(cpufreq_min_freq_limit, policy->cpu));
 }
 
 static void set_policy_min_freq_limit(const struct cpufreq_policy *policy,
@@ -74,7 +74,7 @@ static void set_policy_min_freq_limit(const struct cpufreq_policy *policy,
 	unsigned int cpu;
 
 	for_each_cpu(cpu, policy->related_cpus)
-		WRITE_ONCE(per_cpu(scaling_min_freq_limit, cpu), limit);
+		WRITE_ONCE(per_cpu(cpufreq_min_freq_limit, cpu), limit);
 }
 
 static DEFINE_STATIC_KEY_FALSE(cpufreq_freq_invariance);
