@@ -2,11 +2,14 @@
 /*
  * Kernel Frame-Aware Scheduler (KFAS) - Daily App Thread Assist Engine
  *
- * Provides event-driven, zero-polling thread placement for non-game foreground
+ * Provides event-driven, zero-polling thread assist for non-game foreground
  * Android apps without touching FreqQoS, uprobes, core_ctl, or cpusets:
  *   - Tier 0 (UI Critical): Main UI thread, RenderThread, Flutter/WebView UI
- *     -> routed via WALT PIPELINE_FASTPATH + MVP onto Cortex-A715 gold cores
- *        with a gentle mode-scaled uclamp_min and synchronous Binder inheritance.
+ *     -> in powersave/balance: WALT MVP priority + sync Binder low-latency
+ *        inheritance only (tgt_cpu=-1, uclamp_min=0), avoiding idle big-core
+ *        wakeups and A510 uclamp frequency traps during static viewing/video.
+ *     -> in performance/fast: routes onto Cortex-A715 gold cores via WALT
+ *        PIPELINE_FASTPATH + MVP with mode-scaled uclamp_min.
  *   - Tier 2 (Background/Trash): Known telemetry/log/ad-SDK threads and
  *     Android background-priority workers (nice >= 8) with low demand
  *     -> softly contained to little cores via uclamp_max (with RESET_ON_FORK)
@@ -104,6 +107,7 @@ static bool kfas_daily_is_trash(const char *comm)
 		"mbridge", "pangle", "gdt", "ksad", "tt_",
 		"APM", "apm", "Matrix", "matrix",
 		"Watchdog", "watchdog", "qm-thread",
+		"ConscryptStats", "monitor-perf", "Firebase",
 	};
 	u32 i;
 
@@ -196,6 +200,7 @@ static void kfas_daily_pass_locked(void)
 	int best_rt = -1, main_idx = -1;
 	cpumask_t used_cpus;
 	int boost_none;
+	bool pin_ui_cores;
 
 	if (!g_kfas.daily_active || !tgid || g_kfas.session_active ||
 	    !READ_ONCE(g_kfas.daily_enable) || !g_daily_scan || !g_daily_next)
@@ -207,12 +212,19 @@ static void kfas_daily_pass_locked(void)
 	boost_none = 0;
 #endif
 
-	ui_umin = (g_kfas.mode == KFAS_MODE_POWERSAVE) ? 180 :
-		  (g_kfas.mode == KFAS_MODE_BALANCE) ? 220 :
-		  (g_kfas.mode == KFAS_MODE_PERFORMANCE) ? 295 : 350;
+	/*
+	 * In powersave/balance, avoid pinning idle/light UI threads onto
+	 * multiple sleeping A715/A710 cores or applying a static uclamp_min
+	 * floor (which hurts gold-c4 residency and traps light tasks on A510
+	 * at high voltage). Keep WALT MVP + sync Binder inheritance only, and
+	 * reserve explicit big-core pinning for performance/fast modes.
+	 */
+	pin_ui_cores = (g_kfas.mode >= KFAS_MODE_PERFORMANCE);
+	ui_umin = (g_kfas.mode == KFAS_MODE_PERFORMANCE) ? 200 :
+		  (g_kfas.mode == KFAS_MODE_FAST) ? 260 : 0;
 	/* Keep below SM8550 little-cluster downmigrate ceiling (~238) */
-	trash_umax = (g_kfas.mode == KFAS_MODE_POWERSAVE) ? 190 :
-		     (g_kfas.mode == KFAS_MODE_BALANCE) ? 210 : 230;
+	trash_umax = (g_kfas.mode == KFAS_MODE_POWERSAVE) ? 180 :
+		     (g_kfas.mode == KFAS_MODE_BALANCE) ? 200 : 220;
 
 	/* Phase 1: Snapshot thread group under RCU */
 	rcu_read_lock();
@@ -308,14 +320,15 @@ static void kfas_daily_pass_locked(void)
 	memset(g_daily_next, 0,
 	       KFAS_DAILY_MAX_MANAGED * sizeof(*g_daily_next));
 
-	/* Phase 2: Route UI-critical threads onto A715 gold cores via WALT MVP */
+	/* Phase 2: Grant UI-critical threads WALT MVP (and optional A715 routing) */
 	for (i = 0; i < nr_crit && nr_next < KFAS_DAILY_MAX_MANAGED; i++) {
 		struct kfas_daily_scan_entry *e = &g_daily_scan[crit_idx[i]];
 		struct kfas_managed_tid *m = &g_daily_next[nr_next++];
 		const struct kfas_managed_tid *prev;
 		struct task_struct *task;
 		struct pid *pid_ref = NULL;
-		int tgt_cpu = kfas_daily_pick_ui_cpu(i, &used_cpus);
+		int tgt_cpu = pin_ui_cores ?
+			      kfas_daily_pick_ui_cpu(i, &used_cpus) : -1;
 
 		if (tgt_cpu >= 0)
 			cpumask_set_cpu(tgt_cpu, &used_cpus);
@@ -345,8 +358,15 @@ static void kfas_daily_pass_locked(void)
 			    ops->set_task_placement(task, tgt_cpu, true,
 						    boost_none, 0) == 0)
 				m->walt_pinned = true;
-			if (kfas_task_apply_uclamp(task, ui_umin, 1024, true))
-				m->uclamp_applied = true;
+			if (ui_umin > 0) {
+				if (kfas_task_apply_uclamp(task, ui_umin, 1024,
+							   true))
+					m->uclamp_applied = true;
+			} else if (prev && prev->pid_ref == pid_ref &&
+				   prev->uclamp_applied) {
+				kfas_task_apply_uclamp(task, 0, 1024,
+						       prev->orig_reset_on_fork);
+			}
 			put_task_struct(task);
 		}
 	}
