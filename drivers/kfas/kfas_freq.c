@@ -174,6 +174,29 @@ static void kfas_init_thermal_zone_locked(void)
 	}
 }
 
+static void kfas_dcvs_ensure_limits_locked(void)
+{
+	const struct kfas_dcvs_ops *ops;
+	u32 l3_min = 0, l3_max = 0, ddr_min = 0, ddr_max = 0;
+
+	if (g_kfas.dcvs_limits_ready)
+		return;
+
+	ops = smp_load_acquire(&g_kfas.dcvs_ops);
+	if (!ops || !ops->get_limits)
+		return;
+
+	if (ops->get_limits(&l3_min, &l3_max, &ddr_min, &ddr_max) == 0) {
+		g_kfas.dcvs_l3_min_khz = l3_min;
+		g_kfas.dcvs_l3_max_khz = l3_max;
+		g_kfas.dcvs_ddr_min_khz = ddr_min;
+		g_kfas.dcvs_ddr_max_khz = ddr_max;
+		g_kfas.dcvs_limits_ready = true;
+		pr_info("kfas: dcvs limits L3=%u..%u DDR=%u..%u kHz\n",
+			l3_min, l3_max, ddr_min, ddr_max);
+	}
+}
+
 int kfas_freq_ensure_init_locked(void)
 {
 	int cpu;
@@ -305,29 +328,6 @@ static void kfas_cluster_set_limits(struct kfas_cluster *cl,
 	if (min_khz != cl->cur_min_khz) {
 		if (freq_qos_update_request(&cl->min_req, (s32)min_khz) >= 0)
 			cl->cur_min_khz = min_khz;
-	}
-}
-
-static void kfas_dcvs_ensure_limits_locked(void)
-{
-	const struct kfas_dcvs_ops *ops;
-	u32 l3_min = 0, l3_max = 0, ddr_min = 0, ddr_max = 0;
-
-	if (g_kfas.dcvs_limits_ready)
-		return;
-
-	ops = smp_load_acquire(&g_kfas.dcvs_ops);
-	if (!ops || !ops->get_limits)
-		return;
-
-	if (ops->get_limits(&l3_min, &l3_max, &ddr_min, &ddr_max) == 0) {
-		g_kfas.dcvs_l3_min_khz = l3_min;
-		g_kfas.dcvs_l3_max_khz = l3_max;
-		g_kfas.dcvs_ddr_min_khz = ddr_min;
-		g_kfas.dcvs_ddr_max_khz = ddr_max;
-		g_kfas.dcvs_limits_ready = true;
-		pr_info("kfas: dcvs limits L3=%u..%u DDR=%u..%u kHz\n",
-			l3_min, l3_max, ddr_min, ddr_max);
 	}
 }
 
