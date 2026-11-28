@@ -4431,6 +4431,9 @@ static void walt_sched_init_rq(struct rq *rq)
 	wrq->mvp_arrival_time = 0;
 	wrq->mvp_throttle_time = 0;
 	wrq->skip_mvp = false;
+
+	wrq->uclamp_limit[UCLAMP_MIN] = 0;
+	wrq->uclamp_limit[UCLAMP_MAX] = SCHED_CAPACITY_SCALE;
 }
 
 void sched_window_nr_ticks_change(void)
@@ -4640,9 +4643,13 @@ static void android_rvh_enqueue_task(void *unused, struct rq *rq, struct task_st
 	struct walt_task_struct *wts = (struct walt_task_struct *) p->android_vendor_data1;
 	struct walt_rq *wrq = (struct walt_rq *) rq->android_vendor_data1;
 	bool double_enqueue = false;
+	unsigned long uclamp_min, uclamp_max;
 
 	if (unlikely(walt_disabled))
 		return;
+
+	uclamp_min = uclamp_rq_get(rq, UCLAMP_MIN);
+	uclamp_max = uclamp_rq_get(rq, UCLAMP_MAX);
 
 	walt_lockdep_assert_rq(rq, p);
 
@@ -4691,6 +4698,13 @@ static void android_rvh_enqueue_task(void *unused, struct rq *rq, struct task_st
 	if ((flags & ENQUEUE_WAKEUP) && do_pl_notif(rq))
 		waltgov_run_callback(rq, WALT_CPUFREQ_PL);
 
+	if ((wrq->uclamp_limit[UCLAMP_MIN] != uclamp_min) ||
+	    (wrq->uclamp_limit[UCLAMP_MAX] != uclamp_max)) {
+		wrq->uclamp_limit[UCLAMP_MIN] = uclamp_min;
+		wrq->uclamp_limit[UCLAMP_MAX] = uclamp_max;
+		waltgov_run_callback(rq, WALT_CPUFREQ_UCLAMP);
+	}
+
 	trace_sched_enq_deq_task(p, 1, cpumask_bits(p->cpus_ptr)[0], is_mvp(wts));
 }
 
@@ -4700,9 +4714,13 @@ static void android_rvh_dequeue_task(void *unused, struct rq *rq, struct task_st
 	struct walt_rq *wrq = (struct walt_rq *) rq->android_vendor_data1;
 	struct walt_task_struct *wts = (struct walt_task_struct *) p->android_vendor_data1;
 	bool double_dequeue = false;
+	unsigned long uclamp_min, uclamp_max;
 
 	if (unlikely(walt_disabled))
 		return;
+
+	uclamp_min = uclamp_rq_get(rq, UCLAMP_MIN);
+	uclamp_max = uclamp_rq_get(rq, UCLAMP_MAX);
 
 	walt_lockdep_assert_rq(rq, p);
 
@@ -4740,6 +4758,13 @@ static void android_rvh_dequeue_task(void *unused, struct rq *rq, struct task_st
 
 	if (!double_dequeue)
 		walt_dec_cumulative_runnable_avg(rq, p);
+
+	if ((wrq->uclamp_limit[UCLAMP_MIN] != uclamp_min) ||
+	    (wrq->uclamp_limit[UCLAMP_MAX] != uclamp_max)) {
+		wrq->uclamp_limit[UCLAMP_MIN] = uclamp_min;
+		wrq->uclamp_limit[UCLAMP_MAX] = uclamp_max;
+		waltgov_run_callback(rq, WALT_CPUFREQ_UCLAMP);
+	}
 
 	trace_sched_enq_deq_task(p, 0, cpumask_bits(p->cpus_ptr)[0], is_mvp(wts));
 }

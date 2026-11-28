@@ -141,6 +141,9 @@ struct walt_rq {
 	bool			skip_mvp;
 	u64			latest_clock;
 	u32			enqueue_counter;
+
+	/* UCLAMP tracking */
+	unsigned long		uclamp_limit[UCLAMP_CNT];
 };
 
 struct walt_sched_cluster {
@@ -333,6 +336,7 @@ extern unsigned int sched_lib_mask_force;
 #define WALT_CPUFREQ_PL			0x8
 #define WALT_CPUFREQ_EARLY_DET		0x10
 #define WALT_CPUFREQ_BOOST_UPDATE	0x20
+#define WALT_CPUFREQ_UCLAMP		0x40
 
 #define CPUFREQ_REASON_LOAD		0
 #define CPUFREQ_REASON_BTR		0x1
