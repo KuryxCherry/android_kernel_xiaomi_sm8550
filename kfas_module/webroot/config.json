@@ -1,0 +1,8 @@
+{
+  "title": "KFAS 调度中心",
+  "icon": "kfas-logo.svg",
+  "windowResize": true,
+  "exitConfirm": false,
+  "backHandler": true,
+  "backInterceptor": "native"
+}

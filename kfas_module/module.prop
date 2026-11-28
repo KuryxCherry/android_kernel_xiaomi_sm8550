@@ -1,0 +1,6 @@
+id=kfas_ctrl
+name=KFAS Controller
+version=v1.2.0
+versionCode=10200
+author=KuryxCherry
+description=Event-driven foreground watcher, libgui ELF offset resolver, and Scene powercfg bridge for built-in Kernel Frame-Aware Scheduler (KFAS).

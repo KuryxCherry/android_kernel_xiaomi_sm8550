@@ -1,0 +1,1161 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="color-scheme" content="light dark" />
+<title>KFAS 调度中心</title>
+<link rel="icon" type="image/svg+xml" href="./kfas-logo.svg" />
+<script>
+if (window.ksu) {
+  var l = document.createElement('link');
+  l.rel = 'stylesheet';
+  l.href = '/internal/insets.css';
+  document.head.appendChild(l);
+}
+</script>
+<style>
+:root {
+  --bg: #f4f6fb;
+  --surface: #ffffff;
+  --surface-2: #edf1f8;
+  --border: rgba(15, 23, 42, 0.08);
+  --text: #0f172a;
+  --muted: #64748b;
+  --accent: #4f46e5;
+  --accent-soft: rgba(79, 70, 229, 0.12);
+  --ok: #16a34a;
+  --ok-soft: rgba(22, 163, 74, 0.14);
+  --warn: #d97706;
+  --warn-soft: rgba(217, 119, 6, 0.15);
+  --err: #dc2626;
+  --err-soft: rgba(220, 38, 38, 0.14);
+  --gpu: #9333ea;
+  --gpu-soft: rgba(147, 51, 234, 0.14);
+  --radius: 18px;
+  --top-inset: var(--window-inset-top, env(safe-area-inset-top, 0px));
+  --bot-inset: var(--window-inset-bottom, env(safe-area-inset-bottom, 0px));
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0b0f17;
+    --surface: #131a27;
+    --surface-2: #1b2436;
+    --border: rgba(255, 255, 255, 0.08);
+    --text: #f1f5f9;
+    --muted: #94a3b8;
+    --accent: #818cf8;
+    --accent-soft: rgba(129, 140, 248, 0.16);
+    --ok: #4ade80;
+    --ok-soft: rgba(74, 222, 128, 0.14);
+    --warn: #fbbf24;
+    --warn-soft: rgba(251, 191, 36, 0.15);
+    --err: #f87171;
+    --err-soft: rgba(248, 113, 113, 0.16);
+    --gpu: #c084fc;
+    --gpu-soft: rgba(192, 132, 252, 0.16);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0b0f17;
+  --surface: #131a27;
+  --surface-2: #1b2436;
+  --border: rgba(255, 255, 255, 0.08);
+  --text: #f1f5f9;
+  --muted: #94a3b8;
+  --accent: #818cf8;
+  --accent-soft: rgba(129, 140, 248, 0.16);
+  --ok: #4ade80;
+  --ok-soft: rgba(74, 222, 128, 0.14);
+  --warn: #fbbf24;
+  --warn-soft: rgba(251, 191, 36, 0.15);
+  --err: #f87171;
+  --err-soft: rgba(248, 113, 113, 0.16);
+  --gpu: #c084fc;
+  --gpu-soft: rgba(192, 132, 252, 0.16);
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans CJK SC", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  padding-top: calc(var(--top-inset) + 10px);
+  padding-bottom: calc(var(--bot-inset) + 84px);
+  line-height: 1.45;
+}
+.wrap { max-width: 720px; margin: 0 auto; padding: 0 14px; }
+header.top {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-bottom: 14px; padding: 4px 2px;
+}
+.brand { display: flex; align-items: center; gap: 10px; }
+.brand img { width: 34px; height: 34px; border-radius: 10px; }
+.brand h1 { font-size: 18px; margin: 0; font-weight: 700; letter-spacing: -0.2px; }
+.brand .sub { font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace; }
+.top-actions { display: flex; align-items: center; gap: 8px; }
+.icon-btn {
+  border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  border-radius: 12px; padding: 7px 10px; font-size: 12px; font-weight: 600;
+  cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
+}
+.icon-btn.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px 16px; margin-bottom: 12px;
+}
+.card-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 10px; gap: 8px;
+}
+.card-title { font-size: 14px; font-weight: 700; margin: 0; }
+.card-sub { font-size: 12px; color: var(--muted); }
+.banner {
+  border-radius: 14px; padding: 12px 14px; margin-bottom: 12px;
+  font-size: 13px; border: 1px solid var(--warn); background: var(--warn-soft); color: var(--text);
+}
+.banner strong { color: var(--warn); }
+.pill {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px;
+  border-radius: 999px; font-size: 12px; font-weight: 700;
+}
+.pill.ok { background: var(--ok-soft); color: var(--ok); }
+.pill.warn { background: var(--warn-soft); color: var(--warn); }
+.pill.err { background: var(--err-soft); color: var(--err); }
+.pill.gpu { background: var(--gpu-soft); color: var(--gpu); }
+.pill.muted { background: var(--surface-2); color: var(--muted); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.mode-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.mode-btn {
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
+  border-radius: 14px; padding: 10px 4px; text-align: center; cursor: pointer;
+  transition: all 0.15s ease;
+}
+.mode-btn .m-zh { display: block; font-size: 13px; font-weight: 700; }
+.mode-btn .m-en { display: block; font-size: 10px; color: var(--muted); margin-top: 2px; }
+.mode-btn.active {
+  background: var(--accent); color: #fff; border-color: var(--accent);
+  box-shadow: 0 4px 14px rgba(79, 70, 229, 0.28);
+}
+.mode-btn.active .m-en { color: rgba(255, 255, 255, 0.82); }
+.hero-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 10px; }
+.stat-box {
+  background: var(--surface-2); border-radius: 14px; padding: 10px 12px;
+}
+.stat-label { font-size: 11px; color: var(--muted); }
+.stat-val { font-size: 20px; font-weight: 800; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.stat-unit { font-size: 11px; font-weight: 600; color: var(--muted); margin-left: 2px; }
+.bar-wrap { margin-top: 10px; }
+.bar-top { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-bottom: 5px; }
+.bar { height: 8px; background: var(--surface-2); border-radius: 999px; overflow: hidden; }
+.bar-fill { height: 100%; background: linear-gradient(90deg, #38bdf8, #6366f1, #a855f7); border-radius: 999px; transition: width 0.25s ease; }
+.mini-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 10px; }
+.mini-item {
+  background: var(--surface-2); border-radius: 12px; padding: 8px 10px;
+  display: flex; justify-content: space-between; align-items: center; font-size: 12px;
+}
+.mini-item span:first-child { color: var(--muted); }
+.mini-item strong { font-variant-numeric: tabular-nums; }
+.cluster-list { display: grid; gap: 8px; margin-top: 10px; }
+.cluster-row {
+  background: var(--surface-2); border-radius: 12px; padding: 8px 12px;
+  display: flex; justify-content: space-between; align-items: center; font-size: 12px;
+}
+.row-switch {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 0; border-bottom: 1px solid var(--border);
+}
+.row-switch:last-child { border-bottom: none; padding-bottom: 2px; }
+.row-switch .r-title { font-size: 14px; font-weight: 600; }
+.row-switch .r-desc { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.sw { position: relative; width: 46px; height: 26px; flex-shrink: 0; }
+.sw input { opacity: 0; width: 0; height: 0; }
+.sw-track {
+  position: absolute; inset: 0; background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 999px; transition: 0.2s; cursor: pointer;
+}
+.sw-track:before {
+  content: ""; position: absolute; left: 3px; top: 2px; width: 20px; height: 20px;
+  background: #fff; border-radius: 50%; transition: 0.2s; box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+}
+.sw input:checked + .sw-track { background: var(--accent); border-color: var(--accent); }
+.sw input:checked + .sw-track:before { transform: translateX(19px); }
+.input-row { display: flex; gap: 8px; margin-top: 8px; }
+input[type="text"], input[type="number"], select {
+  width: 100%; background: var(--surface-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 12px; padding: 9px 12px;
+  font-size: 13px; outline: none;
+}
+input:focus { border-color: var(--accent); }
+.btn {
+  border: none; border-radius: 12px; padding: 9px 14px; font-size: 13px; font-weight: 700;
+  cursor: pointer; background: var(--accent); color: #fff; white-space: nowrap;
+}
+.btn.sec { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); }
+.btn.danger { background: var(--err-soft); color: var(--err); }
+.btn.sm { padding: 6px 10px; font-size: 12px; border-radius: 10px; }
+.thread-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+.thread-table th {
+  text-align: left; color: var(--muted); font-weight: 600; padding: 6px 4px;
+  border-bottom: 1px solid var(--border); font-size: 11px;
+}
+.thread-table td {
+  padding: 7px 4px; border-bottom: 1px solid var(--border);
+  font-variant-numeric: tabular-nums; vertical-align: middle;
+}
+.tier-badge {
+  display: inline-block; padding: 2px 6px; border-radius: 6px; font-size: 11px; font-weight: 700;
+}
+.tier-T0 { background: var(--err-soft); color: var(--err); }
+.tier-T1 { background: var(--accent-soft); color: var(--accent); }
+.tier-T2 { background: var(--surface-2); color: var(--muted); }
+.match-ok { color: var(--ok); font-weight: 700; }
+.match-diff { color: var(--warn); font-weight: 700; }
+.game-item {
+  display: flex; align-items: center; gap: 11px; padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.game-item:last-child { border-bottom: none; }
+.app-ico {
+  width: 38px; height: 38px; border-radius: 10px; background: var(--surface-2);
+  flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  font-weight: 800; color: var(--accent); overflow: hidden; position: relative;
+}
+.app-ico img { width: 100%; height: 100%; object-fit: cover; position: absolute; inset: 0; }
+.game-meta { flex: 1; min-width: 0; }
+.game-name { font-size: 14px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.game-pkg { font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fps-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.fps-tag {
+  font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 999px;
+  background: var(--accent-soft); color: var(--accent);
+}
+.chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.chip {
+  padding: 6px 12px; border-radius: 999px; font-size: 12px; font-weight: 700;
+  background: var(--surface-2); color: var(--text); border: 1px solid var(--border); cursor: pointer;
+}
+.chip.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.tune-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 10px; }
+.tune-field label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+pre.logbox {
+  margin: 0; background: var(--surface-2); border-radius: 12px; padding: 10px 12px;
+  font-size: 11px; font-family: ui-monospace, monospace; overflow-x: auto;
+  max-height: 240px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
+}
+nav.tabbar {
+  position: fixed; left: 0; right: 0; bottom: 0;
+  background: var(--surface); border-top: 1px solid var(--border);
+  padding: 6px 10px calc(var(--bot-inset) + 8px);
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; z-index: 50;
+}
+.tab {
+  border: none; background: transparent; color: var(--muted); padding: 7px 4px;
+  border-radius: 12px; font-size: 12px; font-weight: 700; cursor: pointer;
+}
+.tab.active { background: var(--accent-soft); color: var(--accent); }
+.panel { display: none; }
+.panel.active { display: block; }
+.modal-bg {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 80;
+  display: none; align-items: flex-end; justify-content: center;
+}
+.modal-bg.open { display: flex; }
+.modal {
+  width: 100%; max-width: 720px; max-height: 82vh; overflow-y: auto;
+  background: var(--surface); border-radius: 22px 22px 0 0;
+  padding: 16px 16px calc(var(--bot-inset) + 18px);
+}
+.picker-list { max-height: 44vh; overflow-y: auto; margin-top: 8px; }
+.toast {
+  position: fixed; left: 50%; bottom: calc(var(--bot-inset) + 74px); transform: translateX(-50%);
+  background: #0f172a; color: #fff; padding: 8px 16px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; opacity: 0; pointer-events: none; transition: 0.2s; z-index: 99;
+}
+.toast.show { opacity: 0.96; }
+.empty { text-align: center; color: var(--muted); padding: 18px 8px; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <img src="./kfas-logo.svg" alt="KFAS" />
+      <div>
+        <h1>KFAS 调度中心</h1>
+        <div class="sub" id="kernel-ver">正在读取内核状态...</div>
+      </div>
+    </div>
+    <div class="top-actions">
+      <button class="icon-btn" id="btn-live" title="1.5秒实时刷新">● 实时</button>
+      <button class="icon-btn" id="btn-theme">主题</button>
+      <button class="icon-btn" id="btn-refresh">刷新</button>
+    </div>
+  </header>
+
+  <div class="banner" id="offline-banner" style="display:none">
+    <strong>内核接口尚未激活（未检测到 /sys/kernel/kfas）</strong><br />
+    请先刷入刚下载好的 AnyKernel3 内核包并重启；重启后所有实时遥测、Scene 档位同步与线程落核将自动生效。你现在已可提前编辑下方的游戏名单。
+  </div>
+
+  <!-- TAB 1: DASHBOARD -->
+  <section class="panel active" id="tab-dash">
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <div class="card-title">运行档位（与 Scene 同步）</div>
+          <div class="card-sub" id="session-desc">待命中 · 非游戏 100% 原生 WALT</div>
+        </div>
+        <span class="pill muted" id="state-pill"><span class="dot"></span><span id="state-text">读取中</span></span>
+      </div>
+      <div class="mode-grid" id="mode-grid">
+        <button class="mode-btn" data-mode="powersave"><span class="m-zh">省电</span><span class="m-en">powersave</span></button>
+        <button class="mode-btn" data-mode="balance"><span class="m-zh">均衡</span><span class="m-en">balance</span></button>
+        <button class="mode-btn" data-mode="performance"><span class="m-zh">性能</span><span class="m-en">performance</span></button>
+        <button class="mode-btn" data-mode="fast"><span class="m-zh">极速</span><span class="m-en">fast</span></button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div class="card-title">实时帧率与瓶颈归因</div>
+        <span class="pill ok" id="bn-pill">OK</span>
+      </div>
+      <div class="hero-stats">
+        <div class="stat-box">
+          <div class="stat-label">实时帧率</div>
+          <div class="stat-val" id="v-fps">--<span class="stat-unit">fps</span></div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">锁定目标</div>
+          <div class="stat-val" id="v-tfps">--<span class="stat-unit">fps</span></div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">GPU 负载</div>
+          <div class="stat-val" id="v-gpu">--<span class="stat-unit">%</span></div>
+        </div>
+      </div>
+      <div class="bar-wrap">
+        <div class="bar-top"><span>算力需求指数 (Perf Level)</span><strong id="v-perf">0 / 1000</strong></div>
+        <div class="bar"><div class="bar-fill" id="v-perf-bar" style="width:0%"></div></div>
+      </div>
+      <div class="mini-grid">
+        <div class="mini-item"><span>帧耗时 (Frame)</span><strong id="v-frame">-- ms</strong></div>
+        <div class="mini-item"><span>CPU 真执行 (Exec)</span><strong id="v-exec">-- ms</strong></div>
+        <div class="mini-item"><span>调度排队 (Delay)</span><strong id="v-delay">-- ms</strong></div>
+        <div class="mini-item"><span>缓冲等待 (DQ Wait)</span><strong id="v-dq">-- ms</strong></div>
+        <div class="mini-item"><span>GPU 频率</span><strong id="v-gpufreq">-- MHz</strong></div>
+        <div class="mini-item"><span>CPU 温度</span><strong id="v-temp">-- °C</strong></div>
+        <div class="mini-item"><span>L3 / DDR 总线</span><strong id="v-dcvs">--</strong></div>
+        <div class="mini-item"><span>帧前 / 中帧救帧</span><strong id="v-rescues">0 / 0</strong></div>
+      </div>
+      <div class="cluster-list" id="cluster-list"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div class="card-title">内核开关与 A/B 对照</div>
+        <span class="card-sub" id="watcher-badge">哨兵: --</span>
+      </div>
+      <div class="row-switch">
+        <div>
+          <div class="r-title">KFAS 总开关</div>
+          <div class="r-desc">关闭后立即卸载探针并归还全部 FreqQoS 与线程状态</div>
+        </div>
+        <label class="sw"><input type="checkbox" id="sw-enable" /><span class="sw-track"></span></label>
+      </div>
+      <div class="row-switch">
+        <div>
+          <div class="r-title">精准线程放置引擎</div>
+          <div class="r-desc">自动识别渲染与主逻辑线程，经 WALT MVP 路由至 X3 / A715</div>
+        </div>
+        <label class="sw"><input type="checkbox" id="sw-place" /><span class="sw-track"></span></label>
+      </div>
+      <div class="row-switch">
+        <div>
+          <div class="r-title">杂线程隔离上限</div>
+          <div class="r-desc">限制同进程低载杂线程 uclamp 上限，避免抢占 X3 / A715</div>
+        </div>
+        <label class="sw"><input type="checkbox" id="sw-workers" /><span class="sw-track"></span></label>
+      </div>
+      <div class="row-switch">
+        <div>
+          <div class="r-title">游戏期解除大核/X3 暂停</div>
+          <div class="r-desc">渲染激活期调用 core_ctl_set_boost，退出或空闲 1s 自动恢复</div>
+        </div>
+        <label class="sw"><input type="checkbox" id="sw-unpause" /><span class="sw-track"></span></label>
+      </div>
+      <div class="row-switch">
+        <div>
+          <div class="r-title">日常应用线程加速与杂项隔离</div>
+          <div class="r-desc">非游戏前台自动路由 UI/RenderThread 至 A715 并把广告/日志/后台杂线程压回小核（零轮询、零控频、排除银行支付）</div>
+        </div>
+        <label class="sw"><input type="checkbox" id="sw-daily" /><span class="sw-track"></span></label>
+      </div>
+      <div class="row-switch">
+        <div>
+          <div class="r-title">L3 / DDR 总线 DCVS 协同</div>
+          <div class="r-desc">游戏高帧压或提前救帧时经 qcom_dcvs 慢路径温和托底 L3/DDR，稳帧或空闲自动归零</div>
+        </div>
+        <label class="sw"><input type="checkbox" id="sw-dcvs" /><span class="sw-track"></span></label>
+      </div>
+      <div style="padding-top:10px">
+        <div class="r-title" style="font-size:13px">自定义 VIP 线程名前缀（可选，逗号分隔）</div>
+        <div class="input-row">
+          <input type="text" id="in-vip" placeholder="例如: UnityMain,GameThread,RHIThread（留空自动识别）" />
+          <button class="btn sm" id="btn-vip">保存</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- TAB 2: THREAD PLACEMENT -->
+  <section class="panel" id="tab-threads">
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <div class="card-title">SM8550 拓扑与桥接状态</div>
+          <div class="card-sub" id="topo-summary">等待 KFAS 内核上报...</div>
+        </div>
+        <span class="pill muted" id="walt-pill">WALT 桥接</span>
+      </div>
+      <div class="card-sub" style="margin-bottom:8px">
+        游戏模式：T0=渲染线程，T1=主逻辑线程，T2=杂线程；日常模式：T0=UI主线程/RenderThread→A715，T2=低优/杂项→小核。绿色表示目标与实际核一致。
+      </div>
+      <div style="overflow-x:auto">
+        <table class="thread-table">
+          <thead>
+            <tr>
+              <th>TID</th><th>层级</th><th>目标→实际</th><th>负载</th><th>uclamp</th><th>线程名</th>
+            </tr>
+          </thead>
+          <tbody id="thread-tbody">
+            <tr><td colspan="6" class="empty">当前无活跃游戏渲染会话（进入游戏后开启顶部「● 实时」即可观测）</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- TAB 3: GAMES -->
+  <section class="panel" id="tab-games">
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <div class="card-title">受管游戏名单</div>
+          <div class="card-sub" id="games-count">共 0 款 · 仅名单内应用激活 KFAS</div>
+        </div>
+        <button class="btn sm" id="btn-open-picker">+ 添加应用</button>
+      </div>
+      <div id="games-list"><div class="empty">正在加载名单...</div></div>
+    </div>
+  </section>
+
+  <!-- TAB 4: TUNING & LOGS -->
+  <section class="panel" id="tab-tune">
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <div class="card-title">分档位实时热调（重启自动持久化）</div>
+          <div class="card-sub">修改后即刻写入 /sys/kernel/kfas/tuning，无需重刷内核</div>
+        </div>
+        <button class="btn sec sm" id="btn-reset-tune">清除覆盖</button>
+      </div>
+      <div class="chip-row" id="tune-mode-chips">
+        <button class="chip" data-tmode="powersave">省电</button>
+        <button class="chip active" data-tmode="balance">均衡</button>
+        <button class="chip" data-tmode="performance">性能</button>
+        <button class="chip" data-tmode="fast">极速</button>
+      </div>
+      <div class="tune-grid" id="tune-grid"></div>
+      <div style="margin-top:12px; display:flex; justify-content:flex-end;">
+        <button class="btn" id="btn-save-tune">应用并保存当前档位参数</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div class="card-title">探针与哨兵维护</div>
+        <div class="card-sub" id="probes-text">--</div>
+      </div>
+      <div class="chip-row">
+        <button class="btn sec sm" id="btn-probes">重新解析 libgui 偏移</button>
+        <button class="btn sec sm" id="btn-restart-w">重启前台哨兵</button>
+        <button class="btn danger sm" id="btn-detach">强制断开当前会话</button>
+      </div>
+      <pre class="logbox" id="log-box">暂无日志</pre>
+    </div>
+  </section>
+</div>
+
+<!-- GAME ADD / EDIT MODAL -->
+<div class="modal-bg" id="game-modal">
+  <div class="modal">
+    <div class="card-head">
+      <div class="card-title" id="modal-title">添加受管游戏</div>
+      <button class="btn sec sm" id="btn-close-modal">关闭</button>
+    </div>
+    <input type="text" id="app-search" placeholder="搜索已装应用名或直接输入包名..." />
+    <div class="picker-list" id="picker-list"></div>
+    <div style="margin-top:10px">
+      <div class="card-sub">已选包名</div>
+      <input type="text" id="edit-pkg" placeholder="com.example.game" style="margin-top:4px" />
+    </div>
+    <div style="margin-top:10px">
+      <div class="card-sub">目标帧率候选项（点击多选，内核自动锁档）</div>
+      <div class="chip-row" id="fps-chips">
+        <button class="chip" data-fps="24">24</button>
+        <button class="chip" data-fps="30">30</button>
+        <button class="chip" data-fps="45">45</button>
+        <button class="chip active" data-fps="60">60</button>
+        <button class="chip" data-fps="90">90</button>
+        <button class="chip" data-fps="120">120</button>
+        <button class="chip" data-fps="144">144</button>
+      </div>
+    </div>
+    <div style="display:flex; gap:8px; margin-top:12px">
+      <button class="btn" style="flex:1" id="btn-save-game">保存游戏配置</button>
+    </div>
+  </div>
+</div>
+
+<nav class="tabbar">
+  <button class="tab active" data-tab="tab-dash">概览</button>
+  <button class="tab" data-tab="tab-threads">线程落核</button>
+  <button class="tab" data-tab="tab-games">游戏名单</button>
+  <button class="tab" data-tab="tab-tune">调参日志</button>
+</nav>
+<div class="toast" id="toast"></div>
+
+<script>
+const CTL = '/data/adb/modules/kfas_ctrl/kfas_ctl.sh';
+const $ = id => document.getElementById(id);
+let cbSeq = 0;
+let liveTimer = null;
+let installedApps = [];
+let lastGamesSig = '';
+let lastTuneSig = '';
+const labelCache = new Map();
+const state = {
+  meta: {},
+  status: {},
+  clusters: [],
+  topoLine: '',
+  threads: [],
+  tuning: {},
+  games: [],
+  log: '',
+  editTuneMode: 'balance',
+  theme: localStorage.getItem('kfas.theme') || 'system',
+};
+
+const TUNE_FIELDS = [
+  { key: 'margin_pct', label: '帧预算余量 margin_pct (%)', min: 0, max: 35 },
+  { key: 'up_gain', label: '升频增益 up_gain (20~400)', min: 20, max: 400 },
+  { key: 'down_gain', label: '降频增益 down_gain (10~300)', min: 10, max: 300 },
+  { key: 'down_hold', label: '降频稳帧保持帧数 down_hold', min: 2, max: 120 },
+  { key: 'little_floor_khz', label: '小核保底上限 little_floor (kHz)', min: 0, max: 2016000 },
+  { key: 'temp_mc', label: '软温控阈值 temp_mc (0=关闭)', min: 0, max: 110000 },
+  { key: 'crit_umin', label: '关键线程基础 uclamp_min', min: 0, max: 1024 },
+  { key: 'worker_umax', label: '杂线程隔离 uclamp_max', min: 0, max: 1024 },
+  { key: 'prime', label: '超大核 X3 介入 prime (0/1)', min: 0, max: 1 },
+];
+
+function shQuote(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
+
+function toast(msg) {
+  if (window.ksu && typeof window.ksu.toast === 'function') {
+    try { window.ksu.toast(msg); } catch (_) {}
+  }
+  const el = $('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove('show'), 2200);
+}
+
+function ksuExec(cmd) {
+  return new Promise((resolve, reject) => {
+    if (!window.ksu || typeof window.ksu.exec !== 'function') {
+      reject(new Error('请在 KernelSU Manager WebUI 中打开'));
+      return;
+    }
+    const name = '__kfas_cb_' + Date.now() + '_' + (++cbSeq);
+    let timer;
+    window[name] = (errno, stdout, stderr) => {
+      clearTimeout(timer);
+      delete window[name];
+      const code = Number(errno || 0);
+      if (code !== 0) reject(new Error((stderr || stdout || ('exit ' + code)).trim()));
+      else resolve(String(stdout || ''));
+    };
+    timer = setTimeout(() => {
+      delete window[name];
+      reject(new Error('命令执行超时'));
+    }, 10000);
+    try {
+      window.ksu.exec(cmd, null, name);
+    } catch (e) {
+      clearTimeout(timer);
+      delete window[name];
+      reject(e);
+    }
+  });
+}
+
+function ctl(...args) {
+  return ksuExec('sh ' + shQuote(CTL) + ' ' + args.map(shQuote).join(' '));
+}
+
+function applyTheme() {
+  if (state.theme === 'system') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', state.theme);
+  $('btn-theme').textContent = state.theme === 'dark' ? '深色' : state.theme === 'light' ? '浅色' : '自动';
+}
+
+function loadAppLabels(pkgs) {
+  const missing = pkgs.filter(p => p && !labelCache.has(p));
+  if (!missing.length) return;
+  try {
+    let raw = null;
+    if (window.ksu && typeof window.ksu.getPackagesInfo === 'function') {
+      raw = window.ksu.getPackagesInfo(JSON.stringify(missing));
+    } else if (window.ksu && typeof window.ksu.pm === 'function') {
+      const pm = window.ksu.pm();
+      if (pm && typeof pm.getPackagesInfo === 'function') {
+        raw = pm.getPackagesInfo(JSON.stringify(missing));
+      }
+    }
+    if (raw) {
+      for (const item of JSON.parse(raw)) {
+        if (item && item.packageName && item.appLabel && !item.error) {
+          labelCache.set(String(item.packageName), String(item.appLabel).trim());
+        }
+      }
+    }
+  } catch (_) {}
+}
+
+function parseSections(raw) {
+  const sec = {};
+  let cur = '';
+  for (const line of raw.split(/\r?\n/)) {
+    const m = /^===([A-Z]+)===$/.exec(line.trim());
+    if (m) { cur = m[1]; sec[cur] = []; continue; }
+    if (cur && cur !== 'END') sec[cur].push(line);
+  }
+  return sec;
+}
+
+function parseSnapshot(raw) {
+  const sec = parseSections(raw);
+  const meta = {};
+  for (const l of (sec.META || [])) {
+    const i = l.indexOf('=');
+    if (i > 0) meta[l.slice(0, i)] = l.slice(i + 1).trim();
+  }
+  state.meta = meta;
+
+  const st = {};
+  const clusters = [];
+  for (const l of (sec.STATUS || [])) {
+    if (l.startsWith('cluster')) {
+      clusters.push(l);
+      continue;
+    }
+    if (l.startsWith('dcvs:')) {
+      const cleanD = l.replace(/^dcvs:\s*/, '');
+      for (const tok of cleanD.split(/\s+/)) {
+        const i = tok.indexOf('=');
+        if (i > 0) st['dcvs_' + tok.slice(0, i)] = tok.slice(i + 1);
+      }
+      continue;
+    }
+    const clean = l.replace(/^(ema_us|gpu|daily):\s*/, '');
+    for (const tok of clean.split(/\s+/)) {
+      const i = tok.indexOf('=');
+      if (i > 0) st[tok.slice(0, i)] = tok.slice(i + 1);
+    }
+  }
+  state.status = st;
+  state.clusters = clusters;
+
+  const thLines = sec.THREADS || [];
+  state.topoLine = thLines[0] || '';
+  const threads = [];
+  for (const l of thLines.slice(2)) {
+    const p = l.split('\t');
+    if (p.length >= 8) {
+      threads.push({
+        tid: p[0], tier: p[1], assign: Number(p[2]), actual: Number(p[3]),
+        demand: p[4], execUs: p[5], uclamp: p[6], comm: p.slice(7).join('\t'),
+      });
+    }
+  }
+  state.threads = threads;
+
+  const tuning = {};
+  for (const l of (sec.TUNING || [])) {
+    const m = /^([a-z]+):\s*(.*)$/.exec(l.trim());
+    if (!m) continue;
+    const obj = {};
+    for (const tok of m[2].split(/\s+/)) {
+      const i = tok.indexOf('=');
+      if (i > 0) obj[tok.slice(0, i)] = tok.slice(i + 1);
+    }
+    tuning[m[1]] = obj;
+  }
+  state.tuning = tuning;
+
+  const games = [];
+  for (const l of (sec.GAMES || [])) {
+    const s = l.trim();
+    if (!s || s.startsWith('#')) continue;
+    const i = s.indexOf('=');
+    if (i > 0) {
+      const pkg = s.slice(0, i).trim().replace(/"/g, '');
+      const fps = s.slice(i + 1).trim();
+      if (pkg && fps) games.push({ pkg, fps });
+    }
+  }
+  state.games = games;
+  loadAppLabels(games.map(g => g.pkg));
+  state.log = (sec.LOG || []).join('\n');
+}
+
+function fmtMs(usStr) {
+  const v = Number(usStr);
+  if (!isFinite(v) || v <= 0) return '--';
+  return (v / 1000).toFixed(2) + ' ms';
+}
+
+function renderAll() {
+  const m = state.meta;
+  const st = state.status;
+  const present = m.kfas_present === '1';
+
+  $('kernel-ver').textContent = m.kernel || 'Android Kernel';
+  $('offline-banner').style.display = present ? 'none' : 'block';
+
+  const active = st.active === '1';
+  const rendering = st.rendering === '1';
+  const pill = $('state-pill');
+  if (!present) {
+    pill.className = 'pill warn'; $('state-text').textContent = '待刷入内核';
+    $('session-desc').textContent = '当前内核未内置 KFAS 接口';
+  } else if (m.enable !== '1') {
+    pill.className = 'pill muted'; $('state-text').textContent = '已停用';
+    $('session-desc').textContent = '总开关关闭 · 原生 WALT 接管';
+  } else if (rendering) {
+    pill.className = 'pill ok'; $('state-text').textContent = '局内接管中';
+    $('session-desc').textContent = 'PID ' + (st.pid || '-') + ' · 渲染 TID ' + (st.render_tid || '-');
+  } else if (active) {
+    pill.className = 'pill warn'; $('state-text').textContent = '已挂载等待渲染';
+    $('session-desc').textContent = 'PID ' + (st.pid || '-') + ' · 加载/暂停期间自动释放上限';
+  } else if (st.daily_active === '1') {
+    pill.className = 'pill ok'; $('state-text').textContent = '日常线程加速中';
+    $('session-desc').textContent = 'PID ' + (st.daily_pid || '-') + ' · UI关键 ' + (st.daily_crit || 0) + ' / 杂项隔离 ' + (st.daily_trash || 0) + '（零控频干扰）';
+  } else {
+    pill.className = 'pill muted'; $('state-text').textContent = '待机直通';
+    $('session-desc').textContent = '100% 原生 WALT（零干扰）';
+  }
+
+  const curMode = m.mode || st.mode || 'balance';
+  document.querySelectorAll('#mode-grid .mode-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.mode === curMode);
+  });
+
+  $('v-fps').innerHTML = (st.cur_fps && st.cur_fps !== '0.0' ? st.cur_fps : '--') + '<span class="stat-unit">fps</span>';
+  $('v-tfps').innerHTML = (st.target_fps && st.target_fps !== '0' ? st.target_fps : '--') + '<span class="stat-unit">fps</span>';
+  const gpuBusy = (st.busy || '').replace('%', '');
+  $('v-gpu').innerHTML = (st.valid === '1' ? gpuBusy : '--') + '<span class="stat-unit">%</span>';
+
+  const perfRaw = (st.perf || '0/1000').split('/')[0];
+  const perfNum = Math.max(0, Math.min(1000, Number(perfRaw) || 0));
+  $('v-perf').textContent = perfNum + ' / 1000';
+  $('v-perf-bar').style.width = (perfNum / 10) + '%';
+
+  const bn = st.bn || 'OK';
+  const bnEl = $('bn-pill');
+  bnEl.textContent = bn === 'OK' ? '稳帧 OK' : bn === 'CPU' ? 'CPU 瓶颈' : bn === 'SCHED' ? 'SCHED 调度排队' : 'GPU 瓶颈';
+  bnEl.className = 'pill ' + (bn === 'OK' ? 'ok' : bn === 'CPU' ? 'err' : bn === 'SCHED' ? 'warn' : 'gpu');
+
+  $('v-frame').textContent = fmtMs(st.frame);
+  $('v-exec').textContent = fmtMs(st.exec);
+  $('v-delay').textContent = fmtMs(st.delay);
+  $('v-dq').textContent = fmtMs(st.dq_wait);
+  $('v-gpufreq').textContent = st.freq || '--';
+  const tempMc = Number((st.cpu_temp || '').replace('mC', ''));
+  $('v-temp').textContent = tempMc > 0 ? (tempMc / 1000).toFixed(1) + ' °C' : '--';
+  if (st.dcvs_bridge === '1') {
+    const l3Cur = Number((st.dcvs_l3 || '0/0').split('/')[0]) || 0;
+    const ddrCur = Number((st.dcvs_ddr || '0/0').split('/')[0]) || 0;
+    $('v-dcvs').textContent = (l3Cur ? Math.round(l3Cur / 1000) + 'M' : '释放') +
+      ' / ' + (ddrCur ? Math.round(ddrCur / 1000) + 'M' : '释放');
+  } else {
+    $('v-dcvs').textContent = '未桥接';
+  }
+  $('v-rescues').textContent = (st.pre_rescues || '0') + ' / ' + (st.rescues || '0');
+
+  const clRoot = $('cluster-list');
+  clRoot.replaceChildren();
+  const clNames = ['小核簇 (A510)', '中大核簇 (A715+A710)', '超大核 (X3)'];
+  state.clusters.forEach((line, idx) => {
+    const pm = /policy(\d+)/.exec(line);
+    const kneeM = /knee=(\d+)/.exec(line);
+    const minM = /min=(\d+)/.exec(line);
+    const maxM = /max=(\d+)/.exec(line);
+    const minK = minM ? Number(minM[1]) : 0;
+    const maxK = maxM ? Number(maxM[1]) : 0;
+    const kneeK = kneeM ? Number(kneeM[1]) : 0;
+    const row = document.createElement('div');
+    row.className = 'cluster-row';
+    const left = document.createElement('span');
+    left.textContent = (clNames[idx] || ('Cluster ' + idx)) +
+      (pm ? ' · p' + pm[1] : '') +
+      (kneeK ? ' (拐点 ' + Math.round(kneeK / 1000) + 'M)' : '');
+    const right = document.createElement('strong');
+    right.textContent = 'min ' + (minK ? Math.round(minK / 1000) + 'M' : '释放') +
+      ' / max ' + (maxK ? Math.round(maxK / 1000) + 'M' : '无限制');
+    row.append(left, right);
+    clRoot.append(row);
+  });
+
+  $('watcher-badge').textContent = m.watcher_pid && m.watcher_pid !== '0'
+    ? ('哨兵 PID ' + m.watcher_pid) : '哨兵未运行';
+  $('sw-enable').checked = m.enable === '1';
+  $('sw-place').checked = m.placement_enable === '1';
+  $('sw-workers').checked = m.contain_workers === '1';
+  $('sw-unpause').checked = m.unpause_big === '1';
+  $('sw-daily').checked = m.daily_enable === '1';
+  $('sw-dcvs').checked = m.dcvs_enable === '1';
+  if (document.activeElement !== $('in-vip')) $('in-vip').value = m.vip_comms || '';
+
+  // Threads tab
+  $('topo-summary').textContent = state.topoLine || '等待 KFAS 内核上报...';
+  const waltOk = state.topoLine.includes('walt_bridge=1');
+  $('walt-pill').className = 'pill ' + (waltOk ? 'ok' : 'muted');
+  $('walt-pill').textContent = waltOk ? 'WALT 已桥接' : 'WALT 未连接';
+
+  const tb = $('thread-tbody');
+  tb.replaceChildren();
+  if (!state.threads.length) {
+    tb.innerHTML = '<tr><td colspan="6" class="empty">当前无活跃游戏渲染会话（进入游戏后开启顶部「● 实时」即可观测）</td></tr>';
+  } else {
+    for (const t of state.threads) {
+      const tr = document.createElement('tr');
+      const assignTxt = t.assign >= 0 ? ('cpu' + t.assign) : '自动';
+      const matchCls = t.assign < 0 ? '' : (t.assign === t.actual ? 'match-ok' : 'match-diff');
+      tr.innerHTML =
+        `<td>${t.tid}</td>` +
+        `<td><span class="tier-badge tier-${t.tier}">${t.tier}</span></td>` +
+        `<td class="${matchCls}">${assignTxt} → cpu${t.actual}</td>` +
+        `<td>${t.demand}</td>` +
+        `<td>${t.uclamp}</td>` +
+        `<td></td>`;
+      tr.lastElementChild.textContent = t.comm;
+      tb.append(tr);
+    }
+  }
+
+  // Games tab (skip DOM rebuild if unchanged so icons never flicker on live refresh)
+  $('games-count').textContent = '共 ' + state.games.length + ' 款 · 仅名单内应用激活 KFAS';
+  const gamesSig = JSON.stringify(state.games.map(g => [g.pkg, g.fps, labelCache.get(g.pkg) || '']));
+  if (gamesSig !== lastGamesSig) {
+    lastGamesSig = gamesSig;
+    const gl = $('games-list');
+    gl.replaceChildren();
+    if (!state.games.length) {
+      gl.innerHTML = '<div class="empty">名单为空，点击右上角「+ 添加应用」添加游戏</div>';
+    } else {
+      for (const g of state.games) {
+        const label = labelCache.get(g.pkg) || g.pkg;
+        const item = document.createElement('div');
+        item.className = 'game-item';
+        const ico = document.createElement('div');
+        ico.className = 'app-ico';
+        ico.textContent = label.slice(0, 1).toUpperCase();
+        const img = document.createElement('img');
+        img.loading = 'lazy';
+        img.src = 'ksu://icon/' + encodeURIComponent(g.pkg);
+        img.onerror = () => img.remove();
+        ico.append(img);
+
+        const meta = document.createElement('div');
+        meta.className = 'game-meta';
+        const nm = document.createElement('div');
+        nm.className = 'game-name'; nm.textContent = label;
+        const pk = document.createElement('div');
+        pk.className = 'game-pkg'; pk.textContent = g.pkg;
+        const tags = document.createElement('div');
+        tags.className = 'fps-tags';
+        g.fps.split(',').forEach(f => {
+          const sp = document.createElement('span');
+          sp.className = 'fps-tag'; sp.textContent = f.trim() + ' Hz';
+          tags.append(sp);
+        });
+        meta.append(nm, pk, tags);
+
+        const actions = document.createElement('div');
+        actions.style.display = 'flex'; actions.style.gap = '6px';
+        const bEdit = document.createElement('button');
+        bEdit.className = 'btn sec sm'; bEdit.textContent = '改帧';
+        bEdit.onclick = () => openGameModal(g.pkg, g.fps);
+        const bDel = document.createElement('button');
+        bDel.className = 'btn danger sm'; bDel.textContent = '删';
+        bDel.onclick = async () => {
+          try { await ctl('game-del', g.pkg); toast('已移除 ' + label); await refresh(); }
+          catch (e) { toast('失败: ' + e.message); }
+        };
+        actions.append(bEdit, bDel);
+        item.append(ico, meta, actions);
+        gl.append(item);
+      }
+    }
+  }
+
+  // Tuning tab (never overwrite inputs while user is editing)
+  const editingTune = document.activeElement && document.activeElement.closest('#tune-grid');
+  const tuneSig = state.editTuneMode + ':' + JSON.stringify(state.tuning[state.editTuneMode] || {});
+  if (!editingTune && tuneSig !== lastTuneSig) {
+    lastTuneSig = tuneSig;
+    renderTuningForm();
+  }
+  $('probes-text').textContent = m.probes || '未配置';
+  $('log-box').textContent = state.log || '暂无日志';
+}
+
+function renderTuningForm() {
+  const cfg = state.tuning[state.editTuneMode] || {};
+  const grid = $('tune-grid');
+  grid.replaceChildren();
+  for (const f of TUNE_FIELDS) {
+    const box = document.createElement('div');
+    box.className = 'tune-field';
+    const lb = document.createElement('label');
+    lb.textContent = f.label;
+    const inp = document.createElement('input');
+    inp.type = 'number';
+    inp.min = String(f.min);
+    inp.max = String(f.max);
+    inp.dataset.tkey = f.key;
+    inp.value = cfg[f.key] !== undefined ? cfg[f.key] : '';
+    inp.placeholder = '--';
+    box.append(lb, inp);
+    grid.append(box);
+  }
+}
+
+async function refresh(silent = false) {
+  try {
+    const raw = await ctl('snapshot');
+    parseSnapshot(raw);
+    renderAll();
+  } catch (e) {
+    if (!silent) toast('读取失败: ' + e.message);
+  }
+}
+
+async function loadInstalledApps() {
+  if (installedApps.length) return;
+  let pkgs = [];
+  try {
+    if (window.ksu && typeof window.ksu.listPackages === 'function') {
+      pkgs = JSON.parse(window.ksu.listPackages('user'));
+    }
+  } catch (_) {}
+  if (!pkgs.length) {
+    try {
+      const out = await ctl('list-apps');
+      pkgs = out.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    } catch (_) {}
+  }
+  loadAppLabels(pkgs);
+  installedApps = pkgs.map(pkg => ({ pkg, label: labelCache.get(pkg) || pkg }))
+    .sort((a, b) => a.label.localeCompare(b.label, 'zh-CN'));
+}
+
+function renderPicker(query) {
+  const q = (query || '').trim().toLowerCase();
+  const root = $('picker-list');
+  root.replaceChildren();
+  const list = installedApps.filter(a =>
+    !q || a.label.toLowerCase().includes(q) || a.pkg.toLowerCase().includes(q)
+  ).slice(0, 40);
+  if (!list.length) {
+    root.innerHTML = '<div class="empty">无匹配应用，可直接在下方手动填入包名</div>';
+    return;
+  }
+  for (const a of list) {
+    const row = document.createElement('div');
+    row.className = 'game-item';
+    row.style.cursor = 'pointer';
+    row.onclick = () => { $('edit-pkg').value = a.pkg; };
+    const ico = document.createElement('div');
+    ico.className = 'app-ico'; ico.textContent = a.label.slice(0, 1).toUpperCase();
+    const img = document.createElement('img');
+    img.loading = 'lazy'; img.src = 'ksu://icon/' + encodeURIComponent(a.pkg);
+    img.onerror = () => img.remove();
+    ico.append(img);
+    const meta = document.createElement('div');
+    meta.className = 'game-meta';
+    meta.innerHTML = '<div class="game-name"></div><div class="game-pkg"></div>';
+    meta.children[0].textContent = a.label;
+    meta.children[1].textContent = a.pkg;
+    row.append(ico, meta);
+    root.append(row);
+  }
+}
+
+async function openGameModal(pkg = '', fps = '60') {
+  $('modal-title').textContent = pkg ? '编辑游戏帧率档' : '添加受管游戏';
+  $('edit-pkg').value = pkg;
+  $('app-search').value = '';
+  const selected = new Set(String(fps).split(',').map(s => s.trim()));
+  document.querySelectorAll('#fps-chips .chip').forEach(c => {
+    c.classList.toggle('active', selected.has(c.dataset.fps));
+  });
+  $('game-modal').classList.add('open');
+  if (!pkg) {
+    $('picker-list').innerHTML = '<div class="empty">正在读取已装应用...</div>';
+    await loadInstalledApps();
+    renderPicker('');
+  } else {
+    $('picker-list').replaceChildren();
+  }
+}
+
+// Event bindings
+document.querySelectorAll('.tabbar .tab').forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll('.tabbar .tab').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    $(btn.dataset.tab).classList.add('active');
+  };
+});
+
+document.querySelectorAll('#mode-grid .mode-btn').forEach(btn => {
+  btn.onclick = async () => {
+    try {
+      await ctl('set', 'mode', btn.dataset.mode);
+      toast('已切换至 ' + btn.querySelector('.m-zh').textContent + ' 档位');
+      await refresh(true);
+    } catch (e) { toast('切换失败: ' + e.message); }
+  };
+});
+
+const bindSwitch = (id, key, name) => {
+  $(id).onchange = async e => {
+    const val = e.target.checked ? '1' : '0';
+    try {
+      await ctl('set', key, val);
+      toast(name + (val === '1' ? ' 已开启' : ' 已关闭'));
+      await refresh(true);
+    } catch (err) {
+      e.target.checked = !e.target.checked;
+      toast('设置失败: ' + err.message);
+    }
+  };
+};
+bindSwitch('sw-enable', 'enable', 'KFAS 总开关');
+bindSwitch('sw-place', 'placement_enable', '精准线程放置');
+bindSwitch('sw-workers', 'contain_workers', '杂线程隔离');
+bindSwitch('sw-unpause', 'unpause_big', '大核/X3 解暂停');
+bindSwitch('sw-daily', 'daily_enable', '日常应用线程加速');
+bindSwitch('sw-dcvs', 'dcvs_enable', 'L3 / DDR 总线 DCVS 协同');
+
+$('btn-vip').onclick = async () => {
+  const v = $('in-vip').value.trim() || '-';
+  try { await ctl('set', 'vip_comms', v); toast('VIP 线程前缀已更新'); await refresh(true); }
+  catch (e) { toast('保存失败: ' + e.message); }
+};
+
+document.querySelectorAll('#tune-mode-chips .chip').forEach(c => {
+  c.onclick = () => {
+    document.querySelectorAll('#tune-mode-chips .chip').forEach(x => x.classList.remove('active'));
+    c.classList.add('active');
+    state.editTuneMode = c.dataset.tmode;
+    lastTuneSig = '';
+    renderTuningForm();
+  };
+});
+
+$('btn-save-tune').onclick = async () => {
+  const mode = state.editTuneMode;
+  const inputs = document.querySelectorAll('#tune-grid input[data-tkey]');
+  try {
+    for (const inp of inputs) {
+      const val = inp.value.trim();
+      if (val !== '') await ctl('tune', mode, inp.dataset.tkey, val);
+    }
+    toast('已应用并持久化 ' + mode + ' 参数');
+    await refresh(true);
+  } catch (e) { toast('参数写入失败: ' + e.message); }
+};
+
+$('btn-reset-tune').onclick = async () => {
+  try { await ctl('reset-tuning'); toast('已清除自定义持久化覆盖（重启后恢复默认）'); }
+  catch (e) { toast('失败: ' + e.message); }
+};
+
+$('btn-open-picker').onclick = () => openGameModal('', '60,90,120');
+$('btn-close-modal').onclick = () => $('game-modal').classList.remove('open');
+$('game-modal').onclick = e => { if (e.target === $('game-modal')) $('game-modal').classList.remove('open'); };
+$('app-search').oninput = e => renderPicker(e.target.value);
+
+document.querySelectorAll('#fps-chips .chip').forEach(c => {
+  c.onclick = () => c.classList.toggle('active');
+});
+
+$('btn-save-game').onclick = async () => {
+  const pkg = $('edit-pkg').value.trim();
+  const fps = [...document.querySelectorAll('#fps-chips .chip.active')].map(c => c.dataset.fps).join(',');
+  if (!pkg) { toast('请先选择或输入包名'); return; }
+  if (!fps) { toast('请至少勾选 1 个目标帧率'); return; }
+  try {
+    await ctl('game-set', pkg, fps);
+    $('game-modal').classList.remove('open');
+    toast('已保存 ' + pkg);
+    await refresh(true);
+  } catch (e) { toast('保存失败: ' + e.message); }
+};
+
+$('btn-probes').onclick = async () => {
+  try { const out = await ctl('resolve-probes'); toast(out.trim() || '探针已更新'); await refresh(true); }
+  catch (e) { toast('解析失败: ' + e.message); }
+};
+$('btn-restart-w').onclick = async () => {
+  try { await ctl('restart-watcher'); toast('前台哨兵已重启'); await refresh(true); }
+  catch (e) { toast('重启失败: ' + e.message); }
+};
+$('btn-detach').onclick = async () => {
+  try { await ctl('detach'); toast('已释放当前会话'); await refresh(true); }
+  catch (e) { toast('操作失败: ' + e.message); }
+};
+
+$('btn-refresh').onclick = () => refresh(false);
+$('btn-live').onclick = () => {
+  if (liveTimer) {
+    clearInterval(liveTimer); liveTimer = null;
+    $('btn-live').classList.remove('active');
+    toast('已停止实时刷新');
+  } else {
+    liveTimer = setInterval(() => refresh(true), 1500);
+    $('btn-live').classList.add('active');
+    toast('已开启 1.5s 实时监测');
+    refresh(true);
+  }
+};
+$('btn-theme').onclick = () => {
+  const order = ['system', 'dark', 'light'];
+  state.theme = order[(order.indexOf(state.theme) + 1) % order.length];
+  localStorage.setItem('kfas.theme', state.theme);
+  applyTheme();
+};
+
+applyTheme();
+refresh(false);
+</script>
+</body>
+</html>
