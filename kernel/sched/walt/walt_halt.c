@@ -456,14 +456,35 @@ static void android_rvh_get_nohz_timer_target(void *unused, int *cpu, bool *done
 {
 	int i, default_cpu = -1;
 	struct sched_domain *sd;
-	cpumask_t unhalted;
+	cpumask_t active_unhalted;
 
 	*done = true;
+	cpumask_andnot(&active_unhalted, cpu_active_mask, cpu_halt_mask);
 
 	if (housekeeping_cpu(*cpu, HK_FLAG_TIMER) && !cpu_halted(*cpu)) {
 		if (!available_idle_cpu(*cpu))
 			return;
 		default_cpu = *cpu;
+	}
+
+	/*
+	 * If all active cpus are halted, find first active cpu halted by
+	 * core control to avoid affecting externally halted cpus.
+	 */
+	if (!cpumask_weight(&active_unhalted)) {
+		cpumask_t tmp_pause, tmp_halt, *tmp;
+
+		cpumask_and(&tmp_pause, cpu_active_mask, &cpus_paused_by_us);
+		cpumask_and(&tmp_halt, cpu_active_mask, cpu_halt_mask);
+		tmp = cpumask_weight(&tmp_pause) ? &tmp_pause : &tmp_halt;
+
+		for_each_cpu(i, tmp) {
+			if ((*cpu == i) && cpumask_weight(tmp) > 1)
+				continue;
+
+			*cpu = i;
+			return;
+		}
 	}
 
 	rcu_read_lock();
@@ -481,8 +502,7 @@ static void android_rvh_get_nohz_timer_target(void *unused, int *cpu, bool *done
 	}
 
 	if (default_cpu == -1) {
-		cpumask_complement(&unhalted, cpu_halt_mask);
-		for_each_cpu_and(i, &unhalted,
+		for_each_cpu_and(i, &active_unhalted,
 				 housekeeping_cpumask(HK_FLAG_TIMER)) {
 			if (*cpu == i)
 				continue;
@@ -493,8 +513,8 @@ static void android_rvh_get_nohz_timer_target(void *unused, int *cpu, bool *done
 			}
 		}
 
-		/* no active, non-halted, not-idle, choose any */
-		default_cpu = cpumask_any(&unhalted);
+		/* choose any active unhalted cpu */
+		default_cpu = cpumask_any(&active_unhalted);
 
 		if (unlikely(default_cpu >= nr_cpu_ids))
 			goto unlock;

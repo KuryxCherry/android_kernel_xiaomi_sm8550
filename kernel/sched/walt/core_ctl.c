@@ -21,7 +21,7 @@
 #include "trace.h"
 
 /* mask of CPUs on which there is an outstanding pause claim */
-static cpumask_t cpus_paused_by_us = { CPU_BITS_NONE };
+cpumask_t cpus_paused_by_us = { CPU_BITS_NONE };
 
 struct cluster_data {
 	bool			inited;
