@@ -85,11 +85,6 @@ set)
             if [ -w "$KFAS_DIR/$key" ]; then
                 printf '%s\n' "$val" > "$KFAS_DIR/$key" || exit 1
             fi
-            if [ "$key" = "mode" ]; then
-                mkdir -p /dev/kfas 2>/dev/null
-                printf '%s\n' "$val" > /dev/kfas/mode 2>/dev/null
-                chmod 666 /dev/kfas/mode 2>/dev/null
-            fi
             persist_kv "$key" "$val"
             ;;
         *)
