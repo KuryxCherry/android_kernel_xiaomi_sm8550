@@ -1169,25 +1169,54 @@ walt_select_task_rq_fair(void *unused, struct task_struct *p, int prev_cpu,
 	*target_cpu = walt_find_energy_efficient_cpu(p, prev_cpu, sync, sibling_count_hint);
 }
 
+static inline bool walt_binder_ui_sync_caller(struct task_struct *p)
+{
+	const char *comm;
+
+	/* Any real-time thread (SurfaceFlinger, RenderEngine, HWC, audio) */
+	if (p->prio < MAX_RT_PRIO)
+		return true;
+
+	/* Only elevated-priority CFS UI/animation threads (nice <= -4) */
+	if (p->prio > DEFAULT_PRIO - 4)
+		return false;
+
+	/* Foreground top-app RTG high-priority UI / render threads */
+	if (task_in_related_thread_group(p))
+		return true;
+
+	/*
+	 * Critical AOSP/LineageOS UI & transition threads that run as CFS
+	 * nice -4..-10 and may reside in foreground outside top-app RTG.
+	 */
+	comm = p->comm;
+	return !strncmp(comm, "RenderThread", 12) ||
+	       !strncmp(comm, "wmshell.", 8) ||
+	       !strncmp(comm, "ll.splashscreen", 15) ||
+	       !strncmp(comm, "InsetsAnimation", 15);
+}
+
 static void walt_binder_low_latency_set(void *unused, struct task_struct *task,
 					bool sync, struct binder_proc *proc)
 {
 	struct walt_task_struct *wts;
 	bool kfas_sync = false;
+	bool ui_sync = false;
 
 	if (unlikely(walt_disabled || !task))
 		return;
 
 	wts = (struct walt_task_struct *)task->android_vendor_data1;
-#if IS_ENABLED(CONFIG_KFAS)
 	if (sync) {
+#if IS_ENABLED(CONFIG_KFAS)
 		struct walt_task_struct *cur_wts =
 			(struct walt_task_struct *)current->android_vendor_data1;
 
 		kfas_sync = !!(cur_wts->low_latency & WALT_LOW_LATENCY_KFAS);
-	}
 #endif
-	if (kfas_sync ||
+		ui_sync = walt_binder_ui_sync_caller(current);
+	}
+	if (kfas_sync || ui_sync ||
 	    (task_in_related_thread_group(current) &&
 	     task->group_leader->prio < MAX_RT_PRIO) ||
 	    (current->group_leader->prio < MAX_RT_PRIO &&
@@ -1226,13 +1255,22 @@ static void binder_set_priority_hook(void *data,
 static void binder_restore_priority_hook(void *data,
 				struct binder_transaction *bndrtrans, struct task_struct *task)
 {
-	struct walt_task_struct *wts = (struct walt_task_struct *) task->android_vendor_data1;
+	struct walt_task_struct *wts;
 
-	if (unlikely(walt_disabled))
+	if (unlikely(walt_disabled || !task))
 		return;
 
-	if (bndrtrans && wts->boost == TASK_BOOST_STRICT_MAX)
-		wts->boost = bndrtrans->android_vendor_data1;
+	wts = (struct walt_task_struct *) task->android_vendor_data1;
+	if (bndrtrans) {
+		if (wts->boost == TASK_BOOST_STRICT_MAX)
+			wts->boost = bndrtrans->android_vendor_data1;
+	} else {
+		/*
+		 * Binder worker finished all transactions and is returning
+		 * to idle wait; clear borrowed low-latency binder tag.
+		 */
+		wts->low_latency &= ~WALT_LOW_LATENCY_BINDER;
+	}
 }
 
 /*
