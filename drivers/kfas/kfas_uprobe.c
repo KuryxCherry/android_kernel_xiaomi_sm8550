@@ -8,6 +8,7 @@
  */
 #include <linux/fs.h>
 #include <linux/ktime.h>
+#include <linux/math64.h>
 #include <linux/namei.h>
 #include <linux/sched/mm.h>
 #include <linux/string.h>
@@ -90,9 +91,11 @@ static int kfas_dq_ret_handler(struct uprobe_consumer *uc,
 			       unsigned long func, struct pt_regs *regs)
 {
 	pid_t tgid = READ_ONCE(g_kfas.target_pid);
+	pid_t rtid = READ_ONCE(g_kfas.render_tid);
 	pid_t tid;
-	u64 now, wait_ns;
+	u64 now, wait_ns, exec_now;
 	unsigned long flags;
+	bool arm_pre = false;
 	int i;
 
 	if (!tgid || current->tgid != tgid)
@@ -100,6 +103,7 @@ static int kfas_dq_ret_handler(struct uprobe_consumer *uc,
 
 	tid = current->pid;
 	now = ktime_get_mono_fast_ns();
+	exec_now = READ_ONCE(current->se.sum_exec_runtime);
 
 	raw_spin_lock_irqsave(&g_kfas.dq_lock, flags);
 	for (i = 0; i < KFAS_DQ_SLOTS; i++) {
@@ -115,7 +119,28 @@ static int kfas_dq_ret_handler(struct uprobe_consumer *uc,
 			break;
 		}
 	}
+	/*
+	 * Returning from dequeueBuffer marks the true CPU render start for
+	 * frame N. Anchor pre-deadline rescue on the dominant render thread.
+	 */
+	if (rtid > 0 && tid == rtid && READ_ONCE(g_kfas.rendering_active)) {
+		g_kfas.dq_start_ts_ns = now;
+		g_kfas.dq_start_exec_ns = exec_now;
+		g_kfas.dq_start_tid = tid;
+		g_kfas.dq_start_seq = (u32)atomic_read(&g_kfas.frame_seq);
+		arm_pre = true;
+	}
 	raw_spin_unlock_irqrestore(&g_kfas.dq_lock, flags);
+
+	if (arm_pre) {
+		u32 fps = max_t(u32, 15U, READ_ONCE(g_kfas.locked_fps));
+		u64 budget_ns = div_u64(NSEC_PER_SEC, fps);
+		u64 pre_ns = clamp_t(u64, div_u64(budget_ns * 75U, 100U),
+				     5500000ULL, 24000000ULL);
+
+		hrtimer_start(&g_kfas.pre_rescue_timer, ns_to_ktime(pre_ns),
+			      HRTIMER_MODE_REL);
+	}
 	return 0;
 }
 
@@ -277,6 +302,10 @@ void kfas_uprobe_reset_state(void)
 
 	raw_spin_lock_irqsave(&g_kfas.dq_lock, flags);
 	memset(g_kfas.dq_slots, 0, sizeof(g_kfas.dq_slots));
+	g_kfas.dq_start_ts_ns = 0;
+	g_kfas.dq_start_exec_ns = 0;
+	g_kfas.dq_start_tid = 0;
+	g_kfas.dq_start_seq = 0;
 	raw_spin_unlock_irqrestore(&g_kfas.dq_lock, flags);
 }
 

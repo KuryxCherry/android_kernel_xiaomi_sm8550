@@ -1,18 +1,25 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Kernel Frame-Aware Scheduler (KFAS) - Multi-Cluster FreqQoS Controller
+ * Kernel Frame-Aware Scheduler (KFAS) - Multi-Cluster FreqQoS & DCVS Controller
  *
- * Implements closed-loop frame-time regulation over Linux FreqQoS constraints
- * with adaptive target-FPS locking, 5-frame sliding-window drift detection,
- * intra-frame hrtimer ceiling rescue, CPU/SCHED/GPU bottleneck separation,
- * cluster-proportional OPP mapping, and optional soft thermal guardrail.
+ * Implements closed-loop frame-time regulation over Linux FreqQoS & QCOM DCVS
+ * with adaptive target-FPS locking, ARM Energy-Model (EM) OPP efficiency-knee
+ * mapping, multiplicative capacity estimation, 5-frame sliding-window drift
+ * detection, two-stage (dequeueBuffer pre-deadline + post-budget) hrtimer
+ * ceiling rescue, CPU/SCHED/GPU bottleneck separation, and soft thermal guard.
  */
 #include <linux/arch_topology.h>
 #include <linux/cpufreq.h>
+#include <linux/energy_model.h>
 #include <linux/hrtimer.h>
 #include <linux/ktime.h>
 #include <linux/math64.h>
+#include <linux/pid.h>
+#include <linux/pid_namespace.h>
 #include <linux/pm_qos.h>
+#include <linux/rcupdate.h>
+#include <linux/sched/signal.h>
+#include <linux/sched/task.h>
 #include <linux/sort.h>
 #include <linux/string.h>
 #include <linux/thermal.h>
@@ -58,6 +65,91 @@ static int cmp_cluster_cap(const void *a, const void *b)
 	if (ca->policy_cpu > cb->policy_cpu)
 		return 1;
 	return 0;
+}
+
+static void kfas_cluster_init_em(struct kfas_cluster *cl)
+{
+	unsigned int max_f;
+	u32 k;
+#ifdef CONFIG_ENERGY_MODEL
+	struct em_perf_domain *pd;
+#endif
+
+	if (cl->nr_opps == 0)
+		return;
+
+	max_f = cl->opps[cl->nr_opps - 1];
+	if (max_f == 0)
+		return;
+
+	for (k = 0; k < cl->nr_opps; k++) {
+		cl->opp_cap[k] = (unsigned int)div_u64(
+			(u64)cl->opps[k] * 1000ULL + max_f / 2, max_f);
+		cl->opp_cost[k] = 0;
+	}
+	cl->opp_eff_idx = cl->nr_opps > 2 ? (cl->nr_opps * 65U) / 100U :
+			  (cl->nr_opps - 1);
+	cl->em_ready = false;
+
+#ifdef CONFIG_ENERGY_MODEL
+	pd = em_cpu_get(cl->policy_cpu);
+	if (pd && pd->nr_perf_states > 0) {
+		u32 min_cost = U32_MAX;
+		u32 knee = cl->opp_eff_idx;
+		int m;
+
+		for (k = 0; k < cl->nr_opps; k++) {
+			unsigned long best_diff = ULONG_MAX;
+			int best_m = -1;
+			u64 cost = 0;
+
+			for (m = 0; m < pd->nr_perf_states; m++) {
+				unsigned long f = pd->table[m].frequency;
+				unsigned long diff = f > cl->opps[k] ?
+						     (f - cl->opps[k]) :
+						     (cl->opps[k] - f);
+
+				if (diff < best_diff) {
+					best_diff = diff;
+					best_m = m;
+				}
+			}
+			if (best_m >= 0) {
+				cost = pd->table[best_m].cost;
+				if (cost == 0 &&
+				    pd->table[best_m].frequency > 0)
+					cost = div64_u64(
+						(u64)pd->table[best_m].power *
+						max_f,
+						pd->table[best_m].frequency);
+			}
+			cl->opp_cost[k] = cost > U32_MAX ? U32_MAX : (u32)cost;
+			if (cl->opp_cost[k] > 0 &&
+			    (k > 0 || cl->nr_opps == 1) &&
+			    cl->opp_cost[k] < min_cost)
+				min_cost = cl->opp_cost[k];
+		}
+
+		if (min_cost > 0 && min_cost < U32_MAX) {
+			cl->em_ready = true;
+			knee = 0;
+			/*
+			 * Efficiency knee: highest OPP whose energy-per-work
+			 * cost stays within 1.45x of the cluster's minimum.
+			 */
+			for (k = 0; k < cl->nr_opps; k++) {
+				if (cl->opp_cost[k] > 0 &&
+				    (u64)cl->opp_cost[k] * 100ULL <=
+				    (u64)min_cost * 145ULL)
+					knee = k;
+			}
+			if (cl->nr_opps >= 3)
+				knee = clamp_t(u32, knee, cl->nr_opps / 3U,
+					       cl->nr_opps - 2U);
+			cl->opp_eff_idx = knee;
+		}
+	}
+#endif
 }
 
 static void kfas_init_thermal_zone_locked(void)
@@ -144,6 +236,7 @@ int kfas_freq_ensure_init_locked(void)
 			nr = w;
 		}
 		cl->nr_opps = nr;
+		kfas_cluster_init_em(cl);
 		cl->cur_max_khz = FREQ_QOS_MAX_DEFAULT_VALUE;
 		cl->cur_min_khz = FREQ_QOS_MIN_DEFAULT_VALUE;
 
@@ -177,9 +270,11 @@ int kfas_freq_ensure_init_locked(void)
 
 		if (r1 >= 0 && r2 >= 0) {
 			cl->qos_ready = true;
-			pr_info("kfas: cluster[%u] policy%u cap=%lu opps=%u (%u..%u kHz)\n",
+			pr_info("kfas: cluster[%u] policy%u cap=%lu opps=%u (%u..%u kHz) em=%d knee=%u kHz\n",
 				i, cl->policy_cpu, cl->cap_orig, cl->nr_opps,
-				cl->opps[0], cl->opps[cl->nr_opps - 1]);
+				cl->opps[0], cl->opps[cl->nr_opps - 1],
+				cl->em_ready ? 1 : 0,
+				cl->opps[cl->opp_eff_idx]);
 		} else {
 			if (r1 >= 0)
 				freq_qos_remove_request(&cl->max_req);
@@ -191,6 +286,7 @@ int kfas_freq_ensure_init_locked(void)
 	}
 
 	kfas_init_thermal_zone_locked();
+	kfas_dcvs_ensure_limits_locked();
 	g_kfas.freq_inited = true;
 	return 0;
 }
@@ -212,6 +308,123 @@ static void kfas_cluster_set_limits(struct kfas_cluster *cl,
 	}
 }
 
+static void kfas_dcvs_ensure_limits_locked(void)
+{
+	const struct kfas_dcvs_ops *ops;
+	u32 l3_min = 0, l3_max = 0, ddr_min = 0, ddr_max = 0;
+
+	if (g_kfas.dcvs_limits_ready)
+		return;
+
+	ops = smp_load_acquire(&g_kfas.dcvs_ops);
+	if (!ops || !ops->get_limits)
+		return;
+
+	if (ops->get_limits(&l3_min, &l3_max, &ddr_min, &ddr_max) == 0) {
+		g_kfas.dcvs_l3_min_khz = l3_min;
+		g_kfas.dcvs_l3_max_khz = l3_max;
+		g_kfas.dcvs_ddr_min_khz = ddr_min;
+		g_kfas.dcvs_ddr_max_khz = ddr_max;
+		g_kfas.dcvs_limits_ready = true;
+		pr_info("kfas: dcvs limits L3=%u..%u DDR=%u..%u kHz\n",
+			l3_min, l3_max, ddr_min, ddr_max);
+	}
+}
+
+static void kfas_dcvs_set_locked(u32 l3_khz, u32 ddr_khz)
+{
+	const struct kfas_dcvs_ops *ops;
+
+	if (l3_khz == g_kfas.cur_l3_khz && ddr_khz == g_kfas.cur_ddr_khz)
+		return;
+
+	ops = smp_load_acquire(&g_kfas.dcvs_ops);
+	if (!ops || !ops->set_floor) {
+		g_kfas.cur_l3_khz = 0;
+		g_kfas.cur_ddr_khz = 0;
+		return;
+	}
+
+	if (ops->set_floor(l3_khz, ddr_khz) == 0) {
+		g_kfas.cur_l3_khz = l3_khz;
+		g_kfas.cur_ddr_khz = ddr_khz;
+	}
+}
+
+void kfas_freq_release_dcvs_locked(void)
+{
+	kfas_dcvs_set_locked(0, 0);
+}
+
+static void kfas_dcvs_update_locked(const struct kfas_mode_cfg *cfg,
+				    bool rescue_or_severe)
+{
+	u32 l3_pct = 0, ddr_pct = 0;
+	u32 l3_khz = 0, ddr_khz = 0;
+
+	if (!READ_ONCE(g_kfas.dcvs_enable) || !g_kfas.session_active ||
+	    !g_kfas.rendering_active) {
+		kfas_freq_release_dcvs_locked();
+		return;
+	}
+
+	kfas_dcvs_ensure_limits_locked();
+	if (!g_kfas.dcvs_limits_ready)
+		return;
+
+	/* Yield bus floors back to native memlat/bwmon under thermal pressure */
+	if (cfg->temp_thresh_mc > 0 &&
+	    g_kfas.last_cpu_temp_mc > cfg->temp_thresh_mc + 2000) {
+		kfas_freq_release_dcvs_locked();
+		return;
+	}
+
+	if (g_kfas.mode == KFAS_MODE_POWERSAVE) {
+		if (rescue_or_severe)
+			l3_pct = 550;
+	} else {
+		if (rescue_or_severe) {
+			l3_pct = g_kfas.mode >= KFAS_MODE_PERFORMANCE ?
+				 850 : 780;
+			ddr_pct = g_kfas.mode == KFAS_MODE_FAST ? 780 : 650;
+		} else {
+			if (g_kfas.perf_level >= 520 ||
+			    g_kfas.jank_streak >= 1) {
+				u32 p = clamp_t(u32, g_kfas.perf_level,
+						520U, 950U);
+
+				l3_pct = 450U + ((p - 520U) * 400U) / 430U;
+			}
+			if (g_kfas.perf_level >= 680 ||
+			    g_kfas.jank_streak >= 2) {
+				u32 p = clamp_t(u32, g_kfas.perf_level,
+						680U, 1000U);
+
+				ddr_pct = 400U + ((p - 680U) * 350U) / 320U;
+			}
+		}
+	}
+
+	/* Quantize into 5% steps to avoid redundant per-frame RPMh traffic */
+	l3_pct = (l3_pct / 50U) * 50U;
+	ddr_pct = (ddr_pct / 50U) * 50U;
+
+	if (l3_pct > 0 && g_kfas.dcvs_l3_max_khz > g_kfas.dcvs_l3_min_khz) {
+		l3_khz = g_kfas.dcvs_l3_min_khz +
+			 (u32)div_u64((u64)(g_kfas.dcvs_l3_max_khz -
+					    g_kfas.dcvs_l3_min_khz) * l3_pct,
+				      1000U);
+	}
+	if (ddr_pct > 0 && g_kfas.dcvs_ddr_max_khz > g_kfas.dcvs_ddr_min_khz) {
+		ddr_khz = g_kfas.dcvs_ddr_min_khz +
+			  (u32)div_u64((u64)(g_kfas.dcvs_ddr_max_khz -
+					     g_kfas.dcvs_ddr_min_khz) * ddr_pct,
+				       1000U);
+	}
+
+	kfas_dcvs_set_locked(l3_khz, ddr_khz);
+}
+
 void kfas_freq_release_limits_locked(void)
 {
 	u32 i;
@@ -221,6 +434,7 @@ void kfas_freq_release_limits_locked(void)
 					FREQ_QOS_MIN_DEFAULT_VALUE,
 					FREQ_QOS_MAX_DEFAULT_VALUE);
 	}
+	kfas_freq_release_dcvs_locked();
 }
 
 void kfas_freq_reset_session_locked(void)
@@ -235,6 +449,7 @@ void kfas_freq_reset_session_locked(void)
 	g_kfas.win5_cnt = 0;
 	g_kfas.rescue_armed_seq = 0;
 	g_kfas.rescue_active = false;
+	g_kfas.pre_frame_rescues = 0;
 	g_kfas.mid_frame_rescues = 0;
 	atomic_set(&g_kfas.frame_seq, 0);
 	g_kfas.down_cooldown = 0;
@@ -245,16 +460,17 @@ void kfas_freq_reset_session_locked(void)
 	g_kfas.ema_delay_us = 0;
 	g_kfas.ema_dq_wait_us = 0;
 	g_kfas.last_bn = KFAS_BN_OK;
-	g_kfas.render_tid = 0;
+	WRITE_ONCE(g_kfas.render_tid, 0);
 	g_kfas.fps_ring_idx = 0;
 	g_kfas.fps_ring_cnt = 0;
 	g_kfas.fps_eval_cnt = 0;
 	g_kfas.fps_down_streak = 0;
 
 	if (g_kfas.nr_cand_fps > 0)
-		g_kfas.locked_fps = g_kfas.cand_fps[g_kfas.nr_cand_fps - 1];
+		WRITE_ONCE(g_kfas.locked_fps,
+			   g_kfas.cand_fps[g_kfas.nr_cand_fps - 1]);
 	else
-		g_kfas.locked_fps = 60;
+		WRITE_ONCE(g_kfas.locked_fps, 60);
 
 	kfas_freq_release_limits_locked();
 }
@@ -262,8 +478,8 @@ void kfas_freq_reset_session_locked(void)
 static unsigned int kfas_pick_opp(const struct kfas_cluster *cl, u32 pct_1000,
 				  unsigned int floor_khz)
 {
+	unsigned int min_f, max_f, target_khz;
 	u32 idx;
-	unsigned int freq;
 
 	if (cl->nr_opps == 0)
 		return FREQ_QOS_MAX_DEFAULT_VALUE;
@@ -271,25 +487,34 @@ static unsigned int kfas_pick_opp(const struct kfas_cluster *cl, u32 pct_1000,
 	if (pct_1000 >= 1000)
 		return cl->opps[cl->nr_opps - 1];
 
-	idx = (pct_1000 * (cl->nr_opps - 1) + 500) / 1000;
+	/*
+	 * Capacity-proportional OPP selection with ARM Energy-Model filtering:
+	 * map pct_1000 linearly onto [min_freq..max_freq] rather than raw OPP
+	 * indices, and skip any inefficient OPP whose EM cost >= a higher OPP.
+	 */
+	min_f = cl->opps[0];
+	max_f = cl->opps[cl->nr_opps - 1];
+	target_khz = min_f + (unsigned int)div_u64(
+		(u64)(max_f - min_f) * pct_1000, 1000U);
+	if (floor_khz > target_khz)
+		target_khz = floor_khz;
+
+	for (idx = 0; idx < cl->nr_opps; idx++) {
+		if (cl->opps[idx] >= target_khz)
+			break;
+	}
 	if (idx >= cl->nr_opps)
 		idx = cl->nr_opps - 1;
-	freq = cl->opps[idx];
 
-	if (floor_khz > 0 && freq < floor_khz) {
-		u32 i;
-
-		for (i = idx; i < cl->nr_opps; i++) {
-			if (cl->opps[i] >= floor_khz) {
-				freq = cl->opps[i];
-				break;
-			}
-		}
-		if (freq < floor_khz)
-			freq = cl->opps[cl->nr_opps - 1];
+	if (cl->em_ready) {
+		while (idx + 1 < cl->nr_opps &&
+		       cl->opp_cost[idx] > 0 &&
+		       cl->opp_cost[idx + 1] > 0 &&
+		       cl->opp_cost[idx + 1] <= cl->opp_cost[idx])
+			idx++;
 	}
 
-	return freq;
+	return cl->opps[idx];
 }
 
 static void kfas_update_target_fps_locked(u64 frame_ns)
@@ -305,7 +530,7 @@ static void kfas_update_target_fps_locked(u64 frame_ns)
 
 	if (g_kfas.nr_cand_fps <= 1) {
 		if (g_kfas.nr_cand_fps == 1)
-			g_kfas.locked_fps = g_kfas.cand_fps[0];
+			WRITE_ONCE(g_kfas.locked_fps, g_kfas.cand_fps[0]);
 		return;
 	}
 
@@ -338,7 +563,7 @@ static void kfas_update_target_fps_locked(u64 frame_ns)
 
 	if (chosen > g_kfas.locked_fps) {
 		/* Step up immediately (e.g. exiting 30fps cutscene) */
-		g_kfas.locked_fps = chosen;
+		WRITE_ONCE(g_kfas.locked_fps, chosen);
 		g_kfas.fps_down_streak = 0;
 		g_kfas.win5_idx = 0;
 		g_kfas.win5_cnt = 0;
@@ -346,7 +571,7 @@ static void kfas_update_target_fps_locked(u64 frame_ns)
 		/* Require 3 consecutive slow windows before stepping down */
 		g_kfas.fps_down_streak++;
 		if (g_kfas.fps_down_streak >= 3) {
-			g_kfas.locked_fps = chosen;
+			WRITE_ONCE(g_kfas.locked_fps, chosen);
 			g_kfas.fps_down_streak = 0;
 			g_kfas.win5_idx = 0;
 			g_kfas.win5_cnt = 0;
@@ -391,14 +616,25 @@ static void kfas_apply_perf_level_locked(const struct kfas_mode_cfg *cfg,
 			max_khz = kfas_pick_opp(cl, scaled, 0);
 		} else if (i == 0) {
 			/*
-			 * Little cluster (A510): cap routine operation near the
-			 * A510 efficiency knee across all 4 modes so high-volt
-			 * tail OPPs (1.67-2.01 GHz) are avoided and busy tasks
-			 * can spill cleanly onto powered mid cores (CPU4-6).
+			 * Little cluster (A510): anchor routine ceiling on the
+			 * chip's EM efficiency knee so high-voltage tail OPPs
+			 * are avoided and heavy tasks spill cleanly onto A715.
 			 */
-			u32 little_cap = (g_kfas.mode == KFAS_MODE_POWERSAVE) ? 540 :
-					 (g_kfas.mode == KFAS_MODE_BALANCE) ? 660 :
-					 (g_kfas.mode == KFAS_MODE_PERFORMANCE) ? 730 : 800;
+			u32 knee_cap = (cl->em_ready &&
+					cl->opp_eff_idx < cl->nr_opps) ?
+				       cl->opp_cap[cl->opp_eff_idx] : 660U;
+			u32 little_cap;
+
+			if (g_kfas.mode == KFAS_MODE_POWERSAVE)
+				little_cap = knee_cap > 120U ?
+					     (knee_cap - 120U) : 480U;
+			else if (g_kfas.mode == KFAS_MODE_BALANCE)
+				little_cap = knee_cap;
+			else if (g_kfas.mode == KFAS_MODE_PERFORMANCE)
+				little_cap = knee_cap + 70U;
+			else
+				little_cap = knee_cap + 140U;
+			little_cap = clamp_t(u32, little_cap, 480U, 860U);
 
 			scaled = 240 + (perf * (little_cap - 240)) / 1000;
 			if (severe_spike)
@@ -409,12 +645,15 @@ static void kfas_apply_perf_level_locked(const struct kfas_mode_cfg *cfg,
 		} else if (i == g_kfas.nr_clusters - 1 &&
 			   g_kfas.nr_clusters >= 3) {
 			/*
-			 * Prime cluster (X3): keep capped near efficiency band
-			 * whenever A715 handles the game without prime pinning
-			 * so stray background bursts cannot spike X3 to 3.19GHz.
-			 * Ramp smoothly up to peak OPP once prime_in_use or
-			 * severe jank escalates load onto X3.
+			 * Prime cluster (X3): stay below the EM voltage cliff
+			 * until perf >= 600 or severe_spike warrants peak OPP,
+			 * keeping X3 out of its steep >2.8GHz power tail.
 			 */
+			u32 knee_cap = (cl->em_ready &&
+					cl->opp_eff_idx < cl->nr_opps) ?
+				       clamp_t(u32,
+					       cl->opp_cap[cl->opp_eff_idx],
+					       500U, 780U) : 620U;
 			bool prime_open = cfg->prime_enable &&
 					  (g_kfas.prime_in_use ||
 					   g_kfas.mode >= KFAS_MODE_PERFORMANCE ||
@@ -424,10 +663,11 @@ static void kfas_apply_perf_level_locked(const struct kfas_mode_cfg *cfg,
 				scaled = 120 + (perf * 330) / 1000;
 			} else if (severe_spike) {
 				scaled = min_t(u32, 1000, perf + 140);
-			} else if (perf < 500) {
-				scaled = 180 + (perf * 360) / 500;
+			} else if (perf < 600) {
+				scaled = 180 + (perf * (knee_cap - 180)) / 600;
 			} else {
-				scaled = 540 + ((perf - 500) * 460) / 500;
+				scaled = knee_cap +
+					 ((perf - 600) * (1000 - knee_cap)) / 400;
 			}
 			max_khz = kfas_pick_opp(cl, scaled, 0);
 			if (g_kfas.jank_streak >= 3 && cfg->prime_enable &&
@@ -455,32 +695,14 @@ static void kfas_apply_perf_level_locked(const struct kfas_mode_cfg *cfg,
 	}
 }
 
-void kfas_freq_on_mid_rescue_locked(void)
+static void kfas_freq_lift_ceilings_locked(const struct kfas_mode_cfg *cfg)
 {
-	const struct kfas_mode_cfg *cfg = &g_kfas.mode_cfg[g_kfas.mode];
 	u32 i;
 
-	if (!g_kfas.freq_inited || !g_kfas.session_active ||
-	    !g_kfas.rendering_active)
-		return;
-
-	/* Respect soft thermal guardrail with a narrow hysteresis band */
-	if (cfg->temp_thresh_mc > 0 &&
-	    g_kfas.last_cpu_temp_mc > cfg->temp_thresh_mc + 3000)
-		return;
-
-	g_kfas.rescue_active = true;
-	g_kfas.mid_frame_rescues++;
-
 	/*
-	 * Mid-frame stall ceiling lift (concept adapted from open-source
-	 * MiCode perfmgr intra-frame hrtimer timeout rescue):
-	 *  - Immediately lift CPU max_khz ceilings WITHOUT forcing min_khz up
-	 *    or permanently mutating perf_level.
-	 *  - If the render/game threads are actively CPU-stalled, WALT ramps
-	 *    to peak OPP right away instead of waiting for queueBuffer.
-	 *  - If the frame is merely an idle VSync beat or static screen, WALT
-	 *    keeps clocks idle with zero wasted power and zero perf ratchet.
+	 * Immediately lift CPU max_khz ceilings WITHOUT forcing min_khz up
+	 * or permanently mutating perf_level. If the game is CPU-stalled,
+	 * WALT bursts immediately; if idle, clocks stay low with zero ratchet.
 	 */
 	for (i = 0; i < g_kfas.nr_clusters; i++) {
 		struct kfas_cluster *cl = &g_kfas.clusters[i];
@@ -500,6 +722,84 @@ void kfas_freq_on_mid_rescue_locked(void)
 
 		kfas_cluster_set_limits(cl, cl->cur_min_khz, max_khz);
 	}
+}
+
+void kfas_freq_on_pre_rescue_locked(void)
+{
+	const struct kfas_mode_cfg *cfg = &g_kfas.mode_cfg[g_kfas.mode];
+	unsigned long flags;
+	u64 start_exec_ns, cur_exec_ns = 0, exec_so_far, budget_ns;
+	pid_t start_tid;
+	u32 start_seq;
+	bool alive = false, running = false;
+	struct task_struct *t;
+
+	if (!g_kfas.freq_inited || !g_kfas.session_active ||
+	    !g_kfas.rendering_active || g_kfas.rescue_active)
+		return;
+
+	raw_spin_lock_irqsave(&g_kfas.dq_lock, flags);
+	start_tid = g_kfas.dq_start_tid;
+	start_exec_ns = g_kfas.dq_start_exec_ns;
+	start_seq = g_kfas.dq_start_seq;
+	raw_spin_unlock_irqrestore(&g_kfas.dq_lock, flags);
+
+	if (start_tid <= 0 || start_tid != g_kfas.render_tid ||
+	    start_seq != (u32)atomic_read(&g_kfas.frame_seq))
+		return;
+
+	/* Respect soft thermal guardrail with hysteresis */
+	if (cfg->temp_thresh_mc > 0 &&
+	    g_kfas.last_cpu_temp_mc > cfg->temp_thresh_mc + 3000)
+		return;
+
+	/*
+	 * Verify the render thread is genuinely burning CPU before lifting
+	 * ceilings pre-deadline so idle/menu waits never trigger false boosts.
+	 */
+	rcu_read_lock();
+	t = pid_task(find_pid_ns(start_tid, &init_pid_ns), PIDTYPE_PID);
+	if (t && pid_alive(t) && READ_ONCE(t->__state) != TASK_DEAD) {
+		cur_exec_ns = READ_ONCE(t->se.sum_exec_runtime);
+		running = (READ_ONCE(t->__state) == TASK_RUNNING);
+		alive = true;
+	}
+	rcu_read_unlock();
+
+	if (!alive)
+		return;
+
+	budget_ns = div_u64(NSEC_PER_SEC, max_t(u32, 15U, g_kfas.locked_fps));
+	exec_so_far = cur_exec_ns >= start_exec_ns ?
+		      (cur_exec_ns - start_exec_ns) : 0;
+
+	if (exec_so_far < div_u64(budget_ns * 28U, 100U) &&
+	    !(running && exec_so_far >= div_u64(budget_ns * 15U, 100U)))
+		return;
+
+	g_kfas.rescue_active = true;
+	g_kfas.pre_frame_rescues++;
+	kfas_freq_lift_ceilings_locked(cfg);
+	kfas_dcvs_update_locked(cfg, true);
+}
+
+void kfas_freq_on_mid_rescue_locked(void)
+{
+	const struct kfas_mode_cfg *cfg = &g_kfas.mode_cfg[g_kfas.mode];
+
+	if (!g_kfas.freq_inited || !g_kfas.session_active ||
+	    !g_kfas.rendering_active)
+		return;
+
+	/* Respect soft thermal guardrail with a narrow hysteresis band */
+	if (cfg->temp_thresh_mc > 0 &&
+	    g_kfas.last_cpu_temp_mc > cfg->temp_thresh_mc + 3000)
+		return;
+
+	g_kfas.rescue_active = true;
+	g_kfas.mid_frame_rescues++;
+	kfas_freq_lift_ceilings_locked(cfg);
+	kfas_dcvs_update_locked(cfg, true);
 }
 
 void kfas_freq_arm_rescue_locked(void)
@@ -560,7 +860,7 @@ void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s)
 	WRITE_ONCE(g_kfas.rendering_active, true);
 	g_kfas.rescue_active = false;
 	g_kfas.last_frame_ts_ns = s->ts_ns;
-	g_kfas.render_tid = s->tid;
+	WRITE_ONCE(g_kfas.render_tid, s->tid);
 
 	kfas_update_target_fps_locked(s->frame_ns);
 
@@ -721,6 +1021,25 @@ void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s)
 			u32 over_pm = (u32)min_t(u64, 1500ULL,
 						 div64_u64(over_ns * 1000ULL,
 							   budget_ns));
+			/*
+			 * Multiplicative capacity estimation: scale required
+			 * headroom directly by (measured_frame / target_frame)
+			 * from current operating perf_level for 1-frame jump.
+			 */
+			u64 target_ns = div_u64(budget_ns *
+						(100U - margin / 2U), 100U);
+			u64 meas_ns = win5_missed ?
+				      max(s->frame_ns,
+					  div_u64(win5_sum_ns, KFAS_WIN5_SIZE)) :
+				      s->frame_ns;
+			u32 ratio_pm = (u32)clamp_t(u64,
+						    div64_u64(meas_ns * 1000ULL,
+							      max_t(u64, 1ULL,
+								    target_ns)),
+						    1000ULL, 2000ULL);
+			u32 eff_base = max_t(u32, 220U, g_kfas.perf_level);
+			u32 est_delta = (((eff_base * (ratio_pm - 1000U)) /
+					  1000U) * cfg->up_gain) / 100U;
 			bool isolated_tick = (!win5_missed &&
 					      g_kfas.jank_streak == 0 &&
 					      prev_ema_frame_us <= ema_jank_us &&
@@ -738,8 +1057,9 @@ void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s)
 				severe = true;
 				g_kfas.down_cooldown = cfg->down_hold_frames * 4;
 				delta = clamp_t(u32,
-						(over_pm * cfg->up_gain) / 100,
-						65, 240);
+						max(est_delta,
+						    (over_pm * cfg->up_gain) / 100U),
+						65, 260);
 			} else if (isolated_tick && cpu_light_tick) {
 				/*
 				 * Single isolated VSync beat while CPU load is
@@ -761,8 +1081,9 @@ void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s)
 			} else {
 				g_kfas.down_cooldown = cfg->down_hold_frames * 3;
 				delta = clamp_t(u32,
-						(over_pm * cfg->up_gain) / 130,
-						18, 110);
+						max(est_delta,
+						    (over_pm * cfg->up_gain) / 130U),
+						18, 130);
 			}
 		} else {
 			/* Proactive headroom boost before an actual drop */
@@ -862,4 +1183,5 @@ void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s)
 	}
 
 	kfas_apply_perf_level_locked(cfg, severe);
+	kfas_dcvs_update_locked(cfg, severe);
 }

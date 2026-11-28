@@ -69,6 +69,22 @@ void kfas_unregister_walt_ops(void)
 }
 EXPORT_SYMBOL_GPL(kfas_unregister_walt_ops);
 
+int kfas_register_dcvs_ops(const struct kfas_dcvs_ops *ops)
+{
+	if (!ops)
+		return -EINVAL;
+	smp_store_release(&g_kfas.dcvs_ops, ops);
+	pr_info("kfas: qcom_dcvs bridge registered\n");
+	return 0;
+}
+EXPORT_SYMBOL_GPL(kfas_register_dcvs_ops);
+
+void kfas_unregister_dcvs_ops(void)
+{
+	smp_store_release(&g_kfas.dcvs_ops, NULL);
+}
+EXPORT_SYMBOL_GPL(kfas_unregister_dcvs_ops);
+
 static void kfas_init_default_profiles(void)
 {
 	g_kfas.enabled = true;
@@ -77,6 +93,7 @@ static void kfas_init_default_profiles(void)
 	g_kfas.contain_workers = true;
 	g_kfas.unpause_big = true;
 	g_kfas.daily_enable = true;
+	g_kfas.dcvs_enable = true;
 
 	g_kfas.mode_cfg[KFAS_MODE_POWERSAVE] = (struct kfas_mode_cfg){
 		.margin_pct = 4,
@@ -171,6 +188,24 @@ static void kfas_frame_work_fn(struct work_struct *work)
 	mutex_unlock(&g_kfas.ctrl_mutex);
 }
 
+static enum hrtimer_restart kfas_pre_rescue_timer_cb(struct hrtimer *timer)
+{
+	if (READ_ONCE(g_kfas.session_active) &&
+	    READ_ONCE(g_kfas.rendering_active) &&
+	    g_kfas.wq)
+		queue_work(g_kfas.wq, &g_kfas.pre_rescue_work);
+	return HRTIMER_NORESTART;
+}
+
+static void kfas_pre_rescue_work_fn(struct work_struct *work)
+{
+	mutex_lock(&g_kfas.ctrl_mutex);
+	if (g_kfas.session_active && g_kfas.rendering_active &&
+	    !g_kfas.rescue_active)
+		kfas_freq_on_pre_rescue_locked();
+	mutex_unlock(&g_kfas.ctrl_mutex);
+}
+
 static enum hrtimer_restart kfas_rescue_timer_cb(struct hrtimer *timer)
 {
 	if (READ_ONCE(g_kfas.session_active) &&
@@ -195,6 +230,7 @@ static void kfas_idle_work_fn(struct work_struct *work)
 	mutex_lock(&g_kfas.ctrl_mutex);
 	if (g_kfas.session_active && g_kfas.rendering_active) {
 		WRITE_ONCE(g_kfas.rendering_active, false);
+		hrtimer_cancel(&g_kfas.pre_rescue_timer);
 		hrtimer_cancel(&g_kfas.rescue_timer);
 		g_kfas.rescue_active = false;
 		g_kfas.jank_streak = 0;
@@ -202,7 +238,7 @@ static void kfas_idle_work_fn(struct work_struct *work)
 		g_kfas.win5_cnt = 0;
 		g_kfas.surplus_streak = 0;
 		g_kfas.down_cooldown = 0;
-		/* Relax ceilings & core_ctl during loading/paused screens */
+		/* Relax ceilings, DCVS & core_ctl during loading/paused screens */
 		kfas_freq_release_limits_locked();
 		kfas_place_idle_relax_locked();
 	}
@@ -306,6 +342,8 @@ int kfas_session_start_locked(pid_t pid, const u32 *fps_list, u32 nr_fps)
 		mutex_unlock(&g_kfas.ctrl_mutex);
 
 		cancel_work_sync(&g_kfas.frame_work);
+		hrtimer_cancel(&g_kfas.pre_rescue_timer);
+		cancel_work_sync(&g_kfas.pre_rescue_work);
 		hrtimer_cancel(&g_kfas.rescue_timer);
 		cancel_work_sync(&g_kfas.rescue_work);
 		cancel_delayed_work_sync(&g_kfas.idle_work);
@@ -341,6 +379,8 @@ void kfas_session_stop_locked(void)
 	mutex_unlock(&g_kfas.ctrl_mutex);
 
 	cancel_work_sync(&g_kfas.frame_work);
+	hrtimer_cancel(&g_kfas.pre_rescue_timer);
+	cancel_work_sync(&g_kfas.pre_rescue_work);
 	hrtimer_cancel(&g_kfas.rescue_timer);
 	cancel_work_sync(&g_kfas.rescue_work);
 	cancel_delayed_work_sync(&g_kfas.idle_work);
@@ -349,7 +389,7 @@ void kfas_session_stop_locked(void)
 	mutex_lock(&g_kfas.ctrl_mutex);
 	kfas_place_session_stop_locked();
 	kfas_freq_release_limits_locked();
-	g_kfas.render_tid = 0;
+	WRITE_ONCE(g_kfas.render_tid, 0);
 	g_kfas.cur_fps_x10 = 0;
 	g_kfas.last_bn = KFAS_BN_OK;
 	mutex_unlock(&g_kfas.ctrl_mutex);
@@ -373,11 +413,15 @@ static int __init kfas_init(void)
 		return -ENOMEM;
 
 	INIT_WORK(&g_kfas.frame_work, kfas_frame_work_fn);
+	INIT_WORK(&g_kfas.pre_rescue_work, kfas_pre_rescue_work_fn);
 	INIT_WORK(&g_kfas.rescue_work, kfas_rescue_work_fn);
 	INIT_WORK(&g_kfas.exit_work, kfas_exit_work_fn);
 	INIT_DELAYED_WORK(&g_kfas.idle_work, kfas_idle_work_fn);
 	INIT_DELAYED_WORK(&g_kfas.place_work, kfas_place_work_fn);
 	INIT_DELAYED_WORK(&g_kfas.daily_work, kfas_daily_work_fn);
+	hrtimer_init(&g_kfas.pre_rescue_timer, CLOCK_MONOTONIC,
+		     HRTIMER_MODE_REL);
+	g_kfas.pre_rescue_timer.function = kfas_pre_rescue_timer_cb;
 	hrtimer_init(&g_kfas.rescue_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	g_kfas.rescue_timer.function = kfas_rescue_timer_cb;
 	atomic_set(&g_kfas.frame_seq, 0);

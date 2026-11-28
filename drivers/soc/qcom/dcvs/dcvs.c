@@ -21,6 +21,7 @@
 #include <linux/platform_device.h>
 #include <soc/qcom/dcvs.h>
 #include <soc/qcom/of_common.h>
+#include <linux/kfas.h>
 #include "dcvs_private.h"
 #include "trace-dcvs.h"
 
@@ -590,6 +591,109 @@ struct device_node *qcom_dcvs_get_ddr_child_node(
 }
 EXPORT_SYMBOL(qcom_dcvs_get_ddr_child_node);
 
+#if IS_ENABLED(CONFIG_KFAS)
+static bool kfas_dcvs_registered;
+static bool kfas_dcvs_l3_voter;
+static bool kfas_dcvs_ddr_voter;
+
+static int kfas_dcvs_get_limits(u32 *l3_min, u32 *l3_max,
+				u32 *ddr_min, u32 *ddr_max)
+{
+	u32 min_v = 0, max_v = 0;
+
+	if (!dcvs_data || !dcvs_data->inited)
+		return -EPROBE_DEFER;
+
+	if (l3_min && l3_max) {
+		if (kfas_dcvs_l3_voter &&
+		    qcom_dcvs_hw_minmax_get(DCVS_L3, &min_v, &max_v) == 0) {
+			*l3_min = min_v;
+			*l3_max = max_v;
+		} else {
+			*l3_min = 0;
+			*l3_max = 0;
+		}
+	}
+
+	if (ddr_min && ddr_max) {
+		if (kfas_dcvs_ddr_voter &&
+		    qcom_dcvs_hw_minmax_get(DCVS_DDR, &min_v, &max_v) == 0) {
+			*ddr_min = min_v;
+			*ddr_max = max_v;
+		} else {
+			*ddr_min = 0;
+			*ddr_max = 0;
+		}
+	}
+
+	return (kfas_dcvs_l3_voter || kfas_dcvs_ddr_voter) ? 0 : -ENODEV;
+}
+
+static int kfas_dcvs_set_floor(u32 l3_khz, u32 ddr_khz)
+{
+	struct dcvs_freq votes[NUM_DCVS_HW_TYPES];
+	u32 mask = 0;
+
+	if (!dcvs_data || !dcvs_data->inited)
+		return -EAGAIN;
+
+	memset(votes, 0, sizeof(votes));
+	if (kfas_dcvs_l3_voter) {
+		votes[DCVS_L3].hw_type = DCVS_L3;
+		votes[DCVS_L3].ib = l3_khz;
+		mask |= BIT(DCVS_L3);
+	}
+	if (kfas_dcvs_ddr_voter) {
+		votes[DCVS_DDR].hw_type = DCVS_DDR;
+		votes[DCVS_DDR].ib = ddr_khz;
+		mask |= BIT(DCVS_DDR);
+	}
+	if (!mask)
+		return -ENODEV;
+
+	return qcom_dcvs_update_votes("kfas", votes, mask, DCVS_SLOW_PATH);
+}
+
+static const struct kfas_dcvs_ops kfas_qcom_dcvs_ops = {
+	.get_limits = kfas_dcvs_get_limits,
+	.set_floor = kfas_dcvs_set_floor,
+};
+
+static void kfas_dcvs_bridge_register(void)
+{
+	if (kfas_dcvs_registered)
+		return;
+
+	if (qcom_dcvs_register_voter("kfas", DCVS_L3, DCVS_SLOW_PATH) == 0)
+		kfas_dcvs_l3_voter = true;
+	if (qcom_dcvs_register_voter("kfas", DCVS_DDR, DCVS_SLOW_PATH) == 0)
+		kfas_dcvs_ddr_voter = true;
+
+	if (kfas_dcvs_l3_voter || kfas_dcvs_ddr_voter) {
+		kfas_register_dcvs_ops(&kfas_qcom_dcvs_ops);
+		kfas_dcvs_registered = true;
+	}
+}
+
+static void kfas_dcvs_bridge_unregister(void)
+{
+	if (!kfas_dcvs_registered)
+		return;
+
+	kfas_unregister_dcvs_ops();
+	kfas_dcvs_set_floor(0, 0);
+	if (kfas_dcvs_l3_voter) {
+		qcom_dcvs_unregister_voter("kfas", DCVS_L3, DCVS_SLOW_PATH);
+		kfas_dcvs_l3_voter = false;
+	}
+	if (kfas_dcvs_ddr_voter) {
+		qcom_dcvs_unregister_voter("kfas", DCVS_DDR, DCVS_SLOW_PATH);
+		kfas_dcvs_ddr_voter = false;
+	}
+	kfas_dcvs_registered = false;
+}
+#endif
+
 static bool qcom_dcvs_hw_and_paths_inited(void)
 {
 	int i;
@@ -826,8 +930,12 @@ static int qcom_dcvs_path_probe(struct platform_device *pdev)
 	hw->dcvs_paths[path_type] = path;
 	hw->num_inited_paths++;
 
-	if (qcom_dcvs_hw_and_paths_inited())
+	if (qcom_dcvs_hw_and_paths_inited()) {
 		dcvs_data->inited = true;
+#if IS_ENABLED(CONFIG_KFAS)
+		kfas_dcvs_bridge_register();
+#endif
+	}
 
 	return ret;
 }
@@ -908,6 +1016,9 @@ arch_initcall(qcom_dcvs_init);
 #endif
 static __exit void qcom_dcvs_exit(void)
 {
+#if IS_ENABLED(CONFIG_KFAS)
+	kfas_dcvs_bridge_unregister();
+#endif
 	platform_driver_unregister(&qcom_dcvs_driver);
 }
 module_exit(qcom_dcvs_exit);

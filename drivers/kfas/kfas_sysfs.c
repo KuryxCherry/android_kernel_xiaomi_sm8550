@@ -372,6 +372,30 @@ static ssize_t daily_enable_store(struct kobject *kobj,
 	return count;
 }
 
+static ssize_t dcvs_enable_show(struct kobject *kobj,
+				struct kobj_attribute *attr, char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%d\n",
+			 READ_ONCE(g_kfas.dcvs_enable) ? 1 : 0);
+}
+
+static ssize_t dcvs_enable_store(struct kobject *kobj,
+				 struct kobj_attribute *attr,
+				 const char *buf, size_t count)
+{
+	bool val;
+
+	if (kstrtobool(buf, &val))
+		return -EINVAL;
+
+	mutex_lock(&g_kfas.ctrl_mutex);
+	WRITE_ONCE(g_kfas.dcvs_enable, val);
+	if (!val)
+		kfas_freq_release_dcvs_locked();
+	mutex_unlock(&g_kfas.ctrl_mutex);
+	return count;
+}
+
 static ssize_t daily_pid_show(struct kobject *kobj,
 			      struct kobj_attribute *attr, char *buf)
 {
@@ -554,23 +578,34 @@ static ssize_t status_show(struct kobject *kobj, struct kobj_attribute *attr,
 			 kfas_bn_name(g_kfas.last_bn),
 			 g_kfas.max_crit_busy_pct);
 	len += scnprintf(buf + len, PAGE_SIZE - len,
-			 "ema_us: frame=%u exec=%u delay=%u dq_wait=%u frames=%llu dropped=%llu rescues=%llu\n",
+			 "ema_us: frame=%u exec=%u delay=%u dq_wait=%u frames=%llu dropped=%llu pre_rescues=%llu rescues=%llu\n",
 			 g_kfas.ema_frame_us, g_kfas.ema_exec_us,
 			 g_kfas.ema_delay_us, g_kfas.ema_dq_wait_us,
 			 (unsigned long long)READ_ONCE(g_kfas.frames_total),
 			 (unsigned long long)READ_ONCE(g_kfas.frames_dropped_ring),
+			 (unsigned long long)g_kfas.pre_frame_rescues,
 			 (unsigned long long)g_kfas.mid_frame_rescues);
 	len += scnprintf(buf + len, PAGE_SIZE - len,
 			 "gpu: valid=%d busy=%u%% freq=%u/%uMHz cpu_temp=%umC core_ctl_boost=%d\n",
 			 gpu.valid ? 1 : 0, gpu.busy_pct, gpu.freq_mhz,
 			 gpu.max_freq_mhz, g_kfas.last_cpu_temp_mc,
 			 g_kfas.core_ctl_boosted ? 1 : 0);
+	len += scnprintf(buf + len, PAGE_SIZE - len,
+			 "dcvs: bridge=%d enabled=%d l3=%u/%u ddr=%u/%u\n",
+			 smp_load_acquire(&g_kfas.dcvs_ops) ? 1 : 0,
+			 READ_ONCE(g_kfas.dcvs_enable) ? 1 : 0,
+			 g_kfas.cur_l3_khz, g_kfas.dcvs_l3_max_khz,
+			 g_kfas.cur_ddr_khz, g_kfas.dcvs_ddr_max_khz);
 	for (i = 0; i < g_kfas.nr_clusters; i++) {
 		const struct kfas_cluster *cl = &g_kfas.clusters[i];
+		unsigned int knee_khz = (cl->nr_opps > 0 &&
+					 cl->opp_eff_idx < cl->nr_opps) ?
+					cl->opps[cl->opp_eff_idx] : 0;
 
 		len += scnprintf(buf + len, PAGE_SIZE - len,
-				 "cluster%u(policy%u cap=%lu): min=%u max=%u\n",
+				 "cluster%u(policy%u cap=%lu em=%d knee=%u): min=%u max=%u\n",
 				 i, cl->policy_cpu, cl->cap_orig,
+				 cl->em_ready ? 1 : 0, knee_khz,
 				 cl->cur_min_khz,
 				 cl->cur_max_khz == FREQ_QOS_MAX_DEFAULT_VALUE ?
 					0 : cl->cur_max_khz);
@@ -604,6 +639,7 @@ static struct kobj_attribute kfas_attr_contain_workers =
 static struct kobj_attribute kfas_attr_unpause_big = __ATTR_RW(unpause_big);
 static struct kobj_attribute kfas_attr_daily_enable = __ATTR_RW(daily_enable);
 static struct kobj_attribute kfas_attr_daily_pid = __ATTR_RW(daily_pid);
+static struct kobj_attribute kfas_attr_dcvs_enable = __ATTR_RW(dcvs_enable);
 static struct kobj_attribute kfas_attr_vip_comms = __ATTR_RW(vip_comms);
 static struct kobj_attribute kfas_attr_tuning = __ATTR_RW(tuning);
 static struct kobj_attribute kfas_attr_status = __ATTR_RO(status);
@@ -619,6 +655,7 @@ static struct attribute *kfas_attrs[] = {
 	&kfas_attr_unpause_big.attr,
 	&kfas_attr_daily_enable.attr,
 	&kfas_attr_daily_pid.attr,
+	&kfas_attr_dcvs_enable.attr,
 	&kfas_attr_vip_comms.attr,
 	&kfas_attr_tuning.attr,
 	&kfas_attr_status.attr,

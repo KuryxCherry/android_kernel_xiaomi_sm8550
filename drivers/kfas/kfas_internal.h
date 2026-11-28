@@ -25,7 +25,7 @@
 #include <linux/uprobes.h>
 #include <linux/workqueue.h>
 
-#define KFAS_VERSION		"1.2.2"
+#define KFAS_VERSION		"1.3.0"
 
 #define KFAS_MAX_CLUSTERS	4
 #define KFAS_MAX_OPPS		64
@@ -120,6 +120,10 @@ struct kfas_cluster {
 	unsigned long cap_orig;
 	unsigned int nr_opps;
 	unsigned int opps[KFAS_MAX_OPPS];	/* ascending kHz */
+	unsigned int opp_cap[KFAS_MAX_OPPS];	/* 0..1000 freq/max_freq */
+	unsigned int opp_cost[KFAS_MAX_OPPS];	/* relative EM cost, 0 if N/A */
+	unsigned int opp_eff_idx;		/* EM efficiency knee index */
+	bool em_ready;
 	unsigned int cur_max_khz;
 	unsigned int cur_min_khz;
 	struct freq_qos_request max_req;
@@ -179,11 +183,13 @@ struct kfas_state {
 	struct mutex ctrl_mutex;
 	struct workqueue_struct *wq;
 	struct work_struct frame_work;
+	struct work_struct pre_rescue_work;
 	struct work_struct rescue_work;
 	struct work_struct exit_work;
 	struct delayed_work idle_work;
 	struct delayed_work place_work;
 	struct delayed_work daily_work;
+	struct hrtimer pre_rescue_timer;
 	struct hrtimer rescue_timer;
 
 	/* Master configuration */
@@ -193,6 +199,7 @@ struct kfas_state {
 	bool contain_workers;
 	bool unpause_big;
 	bool daily_enable;
+	bool dcvs_enable;
 	struct kfas_mode_cfg mode_cfg[KFAS_MODE_COUNT];
 
 	/* Probe specification (configured by userspace once) */
@@ -232,9 +239,13 @@ struct kfas_state {
 	struct kfas_surface_slot surfaces[KFAS_SURFACE_SLOTS];
 	u64 dominant_surface;
 
-	/* Dequeue blocking stash (protected by dq_lock) */
+	/* Dequeue blocking stash & frame-start telemetry (protected by dq_lock) */
 	raw_spinlock_t dq_lock;
 	struct kfas_dq_slot dq_slots[KFAS_DQ_SLOTS];
+	u64 dq_start_ts_ns;
+	u64 dq_start_exec_ns;
+	pid_t dq_start_tid;
+	u32 dq_start_seq;
 
 	/* Closed-loop controller telemetry (protected by ctrl_mutex) */
 	bool rendering_active;
@@ -247,6 +258,7 @@ struct kfas_state {
 	u32 win5_cnt;
 	u32 rescue_armed_seq;
 	bool rescue_active;
+	u64 pre_frame_rescues;
 	u64 mid_frame_rescues;
 	u32 down_cooldown;
 	u32 max_crit_busy_pct;
@@ -264,6 +276,16 @@ struct kfas_state {
 	u32 nr_clusters;
 	bool freq_inited;
 	struct thermal_zone_device *tz_cpu;
+
+	/* QCOM Bus DCVS (L3 / DDR) bridge */
+	const struct kfas_dcvs_ops *dcvs_ops;
+	bool dcvs_limits_ready;
+	u32 dcvs_l3_min_khz;
+	u32 dcvs_l3_max_khz;
+	u32 dcvs_ddr_min_khz;
+	u32 dcvs_ddr_max_khz;
+	u32 cur_l3_khz;
+	u32 cur_ddr_khz;
 
 	/* WALT bridge & thread placement */
 	const struct kfas_walt_ops *walt_ops;
@@ -315,8 +337,10 @@ void kfas_uprobe_reset_state(void);
 int kfas_freq_ensure_init_locked(void);
 void kfas_freq_reset_session_locked(void);
 void kfas_freq_release_limits_locked(void);
+void kfas_freq_release_dcvs_locked(void);
 void kfas_freq_on_frame_locked(const struct kfas_frame_sample *s);
 void kfas_freq_arm_rescue_locked(void);
+void kfas_freq_on_pre_rescue_locked(void);
 void kfas_freq_on_mid_rescue_locked(void);
 
 /* kfas_place.c */
