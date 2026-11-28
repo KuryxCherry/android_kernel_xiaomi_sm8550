@@ -121,6 +121,14 @@ static bool waltgov_up_down_rate_limit(struct waltgov_policy *wg_policy, u64 tim
 	return false;
 }
 
+static void __waltgov_update_next_freq(struct waltgov_policy *wg_policy,
+		u64 time, unsigned int next_freq, unsigned int raw_freq)
+{
+	wg_policy->cached_raw_freq = raw_freq;
+	wg_policy->next_freq = next_freq;
+	wg_policy->last_freq_update_time = time;
+}
+
 static bool waltgov_update_next_freq(struct waltgov_policy *wg_policy, u64 time,
 					unsigned int next_freq,
 					unsigned int raw_freq)
@@ -133,9 +141,7 @@ static bool waltgov_update_next_freq(struct waltgov_policy *wg_policy, u64 time,
 		return false;
 	}
 
-	wg_policy->cached_raw_freq = raw_freq;
-	wg_policy->next_freq = next_freq;
-	wg_policy->last_freq_update_time = time;
+	__waltgov_update_next_freq(wg_policy, time, next_freq, raw_freq);
 
 	return true;
 }
@@ -1138,8 +1144,9 @@ static void waltgov_limits(struct cpufreq_policy *policy)
 		 */
 		final_freq = cpufreq_driver_resolve_freq(policy, freq);
 
-		if (waltgov_update_next_freq(wg_policy, now, final_freq,
-			final_freq)) {
+		if (wg_policy->next_freq != final_freq) {
+			__waltgov_update_next_freq(wg_policy, now, final_freq,
+						   final_freq);
 			waltgov_fast_switch(wg_policy, now, final_freq);
 		}
 		raw_spin_unlock_irqrestore(&wg_policy->update_lock, flags);
