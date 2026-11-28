@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <meta name="color-scheme" content="light dark" />
-<title>KFAS 调度中心</title>
+<title>KFAS</title>
 <link rel="icon" type="image/svg+xml" href="./kfas-logo.svg" />
 <script>
 if (window.ksu) {
@@ -16,264 +16,287 @@ if (window.ksu) {
 </script>
 <style>
 :root {
-  --bg: #f4f6fb;
-  --surface: #ffffff;
-  --surface-2: #edf1f8;
-  --border: rgba(15, 23, 42, 0.08);
-  --text: #0f172a;
+  --bg: #f5f6fa;
+  --card: #ffffff;
+  --fill: #eef1f6;
+  --line: rgba(15, 23, 42, 0.07);
+  --fg: #0f172a;
   --muted: #64748b;
   --accent: #4f46e5;
-  --accent-soft: rgba(79, 70, 229, 0.12);
+  --accent-bg: rgba(79, 70, 229, 0.11);
   --ok: #16a34a;
-  --ok-soft: rgba(22, 163, 74, 0.14);
+  --ok-bg: rgba(22, 163, 74, 0.13);
   --warn: #d97706;
-  --warn-soft: rgba(217, 119, 6, 0.15);
+  --warn-bg: rgba(217, 119, 6, 0.14);
   --err: #dc2626;
-  --err-soft: rgba(220, 38, 38, 0.14);
+  --err-bg: rgba(220, 38, 38, 0.13);
   --gpu: #9333ea;
-  --gpu-soft: rgba(147, 51, 234, 0.14);
-  --radius: 18px;
-  --top-inset: var(--window-inset-top, env(safe-area-inset-top, 0px));
-  --bot-inset: var(--window-inset-bottom, env(safe-area-inset-bottom, 0px));
+  --gpu-bg: rgba(147, 51, 234, 0.13);
+  --r: 18px;
+  --top: var(--window-inset-top, env(safe-area-inset-top, 0px));
+  --bot: var(--window-inset-bottom, env(safe-area-inset-bottom, 0px));
 }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #0b0f17;
-    --surface: #131a27;
-    --surface-2: #1b2436;
-    --border: rgba(255, 255, 255, 0.08);
-    --text: #f1f5f9;
+  :root {
+    --bg: #0c1018;
+    --card: #141b28;
+    --fill: #1c2536;
+    --line: rgba(255, 255, 255, 0.07);
+    --fg: #f1f5f9;
     --muted: #94a3b8;
     --accent: #818cf8;
-    --accent-soft: rgba(129, 140, 248, 0.16);
+    --accent-bg: rgba(129, 140, 248, 0.16);
     --ok: #4ade80;
-    --ok-soft: rgba(74, 222, 128, 0.14);
+    --ok-bg: rgba(74, 222, 128, 0.14);
     --warn: #fbbf24;
-    --warn-soft: rgba(251, 191, 36, 0.15);
+    --warn-bg: rgba(251, 191, 36, 0.15);
     --err: #f87171;
-    --err-soft: rgba(248, 113, 113, 0.16);
+    --err-bg: rgba(248, 113, 113, 0.15);
     --gpu: #c084fc;
-    --gpu-soft: rgba(192, 132, 252, 0.16);
+    --gpu-bg: rgba(192, 132, 252, 0.15);
   }
-}
-:root[data-theme="dark"] {
-  --bg: #0b0f17;
-  --surface: #131a27;
-  --surface-2: #1b2436;
-  --border: rgba(255, 255, 255, 0.08);
-  --text: #f1f5f9;
-  --muted: #94a3b8;
-  --accent: #818cf8;
-  --accent-soft: rgba(129, 140, 248, 0.16);
-  --ok: #4ade80;
-  --ok-soft: rgba(74, 222, 128, 0.14);
-  --warn: #fbbf24;
-  --warn-soft: rgba(251, 191, 36, 0.15);
-  --err: #f87171;
-  --err-soft: rgba(248, 113, 113, 0.16);
-  --gpu: #c084fc;
-  --gpu-soft: rgba(192, 132, 252, 0.16);
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans CJK SC", sans-serif;
   background: var(--bg);
-  color: var(--text);
-  padding-top: calc(var(--top-inset) + 10px);
-  padding-bottom: calc(var(--bot-inset) + 84px);
-  line-height: 1.45;
+  color: var(--fg);
+  padding-top: calc(var(--top) + 10px);
+  padding-bottom: calc(var(--bot) + 78px);
+  line-height: 1.4;
 }
-.wrap { max-width: 720px; margin: 0 auto; padding: 0 14px; }
-header.top {
+.wrap { max-width: 640px; margin: 0 auto; padding: 0 14px; }
+
+/* Header */
+.top {
   display: flex; align-items: center; justify-content: space-between;
-  gap: 10px; margin-bottom: 14px; padding: 4px 2px;
+  margin-bottom: 14px; padding: 2px 2px;
 }
-.brand { display: flex; align-items: center; gap: 10px; }
-.brand img { width: 34px; height: 34px; border-radius: 10px; }
-.brand h1 { font-size: 18px; margin: 0; font-weight: 700; letter-spacing: -0.2px; }
-.brand .sub { font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace; }
-.top-actions { display: flex; align-items: center; gap: 8px; }
-.icon-btn {
-  border: 1px solid var(--border); background: var(--surface); color: var(--text);
-  border-radius: 12px; padding: 7px 10px; font-size: 12px; font-weight: 600;
+.brand { display: flex; align-items: center; gap: 9px; }
+.brand img { width: 30px; height: 30px; border-radius: 9px; }
+.brand h1 { font-size: 18px; font-weight: 750; margin: 0; letter-spacing: -0.3px; }
+.ver-tag {
+  font-size: 11px; font-weight: 700; color: var(--muted);
+  background: var(--fill); padding: 2px 7px; border-radius: 999px;
+  font-family: ui-monospace, monospace;
+}
+.top-acts { display: flex; gap: 6px; }
+.chip-btn {
+  border: 1px solid var(--line); background: var(--card); color: var(--fg);
+  border-radius: 999px; padding: 6px 11px; font-size: 12px; font-weight: 600;
   cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
 }
-.icon-btn.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.chip-btn.on { background: var(--accent-bg); color: var(--accent); border-color: var(--accent); }
+
+/* Cards */
 .card {
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 14px 16px; margin-bottom: 12px;
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: var(--r); padding: 15px 16px; margin-bottom: 12px;
 }
-.card-head {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 10px; gap: 8px;
-}
-.card-title { font-size: 14px; font-weight: 700; margin: 0; }
-.card-sub { font-size: 12px; color: var(--muted); }
+.head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.title { font-size: 14px; font-weight: 700; }
+.sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
 .banner {
-  border-radius: 14px; padding: 12px 14px; margin-bottom: 12px;
-  font-size: 13px; border: 1px solid var(--warn); background: var(--warn-soft); color: var(--text);
+  border-radius: 14px; padding: 11px 14px; margin-bottom: 12px; font-size: 13px;
+  border: 1px solid var(--warn); background: var(--warn-bg);
 }
-.banner strong { color: var(--warn); }
+
+/* Pills */
 .pill {
-  display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px;
-  border-radius: 999px; font-size: 12px; font-weight: 700;
+  display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px;
+  border-radius: 999px; font-size: 11px; font-weight: 700; white-space: nowrap;
 }
-.pill.ok { background: var(--ok-soft); color: var(--ok); }
-.pill.warn { background: var(--warn-soft); color: var(--warn); }
-.pill.err { background: var(--err-soft); color: var(--err); }
-.pill.gpu { background: var(--gpu-soft); color: var(--gpu); }
-.pill.muted { background: var(--surface-2); color: var(--muted); }
-.dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
-.mode-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
-.mode-btn {
-  border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
-  border-radius: 14px; padding: 10px 4px; text-align: center; cursor: pointer;
-  transition: all 0.15s ease;
+.pill.ok { background: var(--ok-bg); color: var(--ok); }
+.pill.warn { background: var(--warn-bg); color: var(--warn); }
+.pill.err { background: var(--err-bg); color: var(--err); }
+.pill.gpu { background: var(--gpu-bg); color: var(--gpu); }
+.pill.muted { background: var(--fill); color: var(--muted); }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+
+/* Segmented Mode Control */
+.seg {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px;
+  background: var(--fill); border-radius: 13px; padding: 4px; margin-top: 13px;
 }
-.mode-btn .m-zh { display: block; font-size: 13px; font-weight: 700; }
-.mode-btn .m-en { display: block; font-size: 10px; color: var(--muted); margin-top: 2px; }
-.mode-btn.active {
-  background: var(--accent); color: #fff; border-color: var(--accent);
-  box-shadow: 0 4px 14px rgba(79, 70, 229, 0.28);
+.seg button {
+  border: none; background: transparent; color: var(--muted);
+  border-radius: 10px; padding: 8px 4px; font-size: 13px; font-weight: 700;
+  cursor: pointer; transition: 0.15s;
 }
-.mode-btn.active .m-en { color: rgba(255, 255, 255, 0.82); }
-.hero-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 10px; }
-.stat-box {
-  background: var(--surface-2); border-radius: 14px; padding: 10px 12px;
+.seg button.active {
+  background: var(--card); color: var(--accent);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
-.stat-label { font-size: 11px; color: var(--muted); }
-.stat-val { font-size: 20px; font-weight: 800; margin-top: 2px; font-variant-numeric: tabular-nums; }
-.stat-unit { font-size: 11px; font-weight: 600; color: var(--muted); margin-left: 2px; }
-.bar-wrap { margin-top: 10px; }
-.bar-top { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-bottom: 5px; }
-.bar { height: 8px; background: var(--surface-2); border-radius: 999px; overflow: hidden; }
-.bar-fill { height: 100%; background: linear-gradient(90deg, #38bdf8, #6366f1, #a855f7); border-radius: 999px; transition: width 0.25s ease; }
-.mini-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 10px; }
-.mini-item {
-  background: var(--surface-2); border-radius: 12px; padding: 8px 10px;
-  display: flex; justify-content: space-between; align-items: center; font-size: 12px;
+
+/* Metrics */
+.metrics {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px;
 }
-.mini-item span:first-child { color: var(--muted); }
-.mini-item strong { font-variant-numeric: tabular-nums; }
-.cluster-list { display: grid; gap: 8px; margin-top: 10px; }
-.cluster-row {
-  background: var(--surface-2); border-radius: 12px; padding: 8px 12px;
-  display: flex; justify-content: space-between; align-items: center; font-size: 12px;
+.m-box { background: var(--fill); border-radius: 13px; padding: 10px 11px; }
+.m-k { font-size: 11px; color: var(--muted); }
+.m-v { font-size: 19px; font-weight: 800; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.m-u { font-size: 11px; font-weight: 600; color: var(--muted); margin-left: 2px; }
+.bar { height: 4px; background: var(--line); border-radius: 999px; margin-top: 6px; overflow: hidden; }
+.bar-fill { height: 100%; background: var(--accent); border-radius: 999px; transition: width 0.25s; }
+
+/* Collapsible details */
+details.fold {
+  margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px;
 }
-.row-switch {
+details.fold > summary {
+  list-style: none; cursor: pointer; font-size: 12px; font-weight: 600;
+  color: var(--muted); display: flex; justify-content: space-between; align-items: center;
+  user-select: none;
+}
+details.fold > summary::-webkit-details-marker { display: none; }
+details.fold > summary::after { content: "▾"; font-size: 13px; transition: 0.15s; }
+details.fold[open] > summary::after { transform: rotate(180deg); }
+.fold-body { margin-top: 10px; }
+
+.kv-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+.kv {
+  background: var(--fill); border-radius: 10px; padding: 7px 10px;
+  display: flex; justify-content: space-between; font-size: 12px;
+}
+.kv span { color: var(--muted); }
+.kv strong { font-variant-numeric: tabular-nums; }
+.cl-list { display: grid; gap: 6px; margin-top: 8px; }
+.cl-row {
+  background: var(--fill); border-radius: 10px; padding: 7px 10px;
+  display: flex; justify-content: space-between; font-size: 12px;
+}
+
+/* Thread table inside details */
+.th-wrap { overflow-x: auto; margin-top: 10px; }
+table.th { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+table.th th {
+  text-align: left; color: var(--muted); font-weight: 600; padding: 5px 4px;
+  border-bottom: 1px solid var(--line);
+}
+table.th td {
+  padding: 6px 4px; border-bottom: 1px solid var(--line);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.t-badge {
+  display: inline-block; padding: 1px 5px; border-radius: 5px; font-size: 10px; font-weight: 700;
+}
+.t-T0 { background: var(--err-bg); color: var(--err); }
+.t-T1 { background: var(--accent-bg); color: var(--accent); }
+.t-T2 { background: var(--fill); color: var(--muted); }
+.ok-txt { color: var(--ok); font-weight: 700; }
+.warn-txt { color: var(--warn); font-weight: 700; }
+
+/* Switches */
+.sw-row {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  padding: 10px 0; border-bottom: 1px solid var(--border);
+  padding: 10px 0; border-bottom: 1px solid var(--line);
 }
-.row-switch:last-child { border-bottom: none; padding-bottom: 2px; }
-.row-switch .r-title { font-size: 14px; font-weight: 600; }
-.row-switch .r-desc { font-size: 12px; color: var(--muted); margin-top: 2px; }
-.sw { position: relative; width: 46px; height: 26px; flex-shrink: 0; }
+.sw-row:first-child { padding-top: 2px; }
+.sw-row:last-child { border-bottom: none; padding-bottom: 2px; }
+.sw-t { font-size: 14px; font-weight: 600; }
+.sw-d { font-size: 12px; color: var(--muted); margin-top: 1px; }
+.sw { position: relative; width: 44px; height: 25px; flex-shrink: 0; }
 .sw input { opacity: 0; width: 0; height: 0; }
-.sw-track {
-  position: absolute; inset: 0; background: var(--surface-2); border: 1px solid var(--border);
-  border-radius: 999px; transition: 0.2s; cursor: pointer;
+.sw i {
+  position: absolute; inset: 0; background: var(--fill); border: 1px solid var(--line);
+  border-radius: 999px; transition: 0.18s; cursor: pointer;
 }
-.sw-track:before {
-  content: ""; position: absolute; left: 3px; top: 2px; width: 20px; height: 20px;
-  background: #fff; border-radius: 50%; transition: 0.2s; box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+.sw i::before {
+  content: ""; position: absolute; left: 2px; top: 2px; width: 19px; height: 19px;
+  background: #fff; border-radius: 50%; transition: 0.18s; box-shadow: 0 1px 3px rgba(0,0,0,0.22);
 }
-.sw input:checked + .sw-track { background: var(--accent); border-color: var(--accent); }
-.sw input:checked + .sw-track:before { transform: translateX(19px); }
-.input-row { display: flex; gap: 8px; margin-top: 8px; }
-input[type="text"], input[type="number"], select {
-  width: 100%; background: var(--surface-2); color: var(--text);
-  border: 1px solid var(--border); border-radius: 12px; padding: 9px 12px;
+.sw input:checked + i { background: var(--accent); border-color: var(--accent); }
+.sw input:checked + i::before { transform: translateX(19px); }
+
+/* Games */
+.g-item {
+  display: flex; align-items: center; gap: 11px; padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+}
+.g-item:last-child { border-bottom: none; }
+.ico {
+  width: 36px; height: 36px; border-radius: 10px; background: var(--fill);
+  flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  font-weight: 800; color: var(--accent); overflow: hidden; position: relative;
+}
+.ico img { width: 100%; height: 100%; object-fit: cover; position: absolute; inset: 0; }
+.g-meta { flex: 1; min-width: 0; }
+.g-name { font-size: 14px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.g-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.tag {
+  font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 999px;
+  background: var(--accent-bg); color: var(--accent);
+}
+
+/* Inputs & Buttons */
+.in-row { display: flex; gap: 8px; margin-top: 8px; }
+input[type="text"], input[type="number"] {
+  width: 100%; background: var(--fill); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 11px; padding: 8px 11px;
   font-size: 13px; outline: none;
 }
 input:focus { border-color: var(--accent); }
 .btn {
-  border: none; border-radius: 12px; padding: 9px 14px; font-size: 13px; font-weight: 700;
+  border: none; border-radius: 11px; padding: 8px 13px; font-size: 12.5px; font-weight: 700;
   cursor: pointer; background: var(--accent); color: #fff; white-space: nowrap;
 }
-.btn.sec { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); }
-.btn.danger { background: var(--err-soft); color: var(--err); }
-.btn.sm { padding: 6px 10px; font-size: 12px; border-radius: 10px; }
-.thread-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
-.thread-table th {
-  text-align: left; color: var(--muted); font-weight: 600; padding: 6px 4px;
-  border-bottom: 1px solid var(--border); font-size: 11px;
-}
-.thread-table td {
-  padding: 7px 4px; border-bottom: 1px solid var(--border);
-  font-variant-numeric: tabular-nums; vertical-align: middle;
-}
-.tier-badge {
-  display: inline-block; padding: 2px 6px; border-radius: 6px; font-size: 11px; font-weight: 700;
-}
-.tier-T0 { background: var(--err-soft); color: var(--err); }
-.tier-T1 { background: var(--accent-soft); color: var(--accent); }
-.tier-T2 { background: var(--surface-2); color: var(--muted); }
-.match-ok { color: var(--ok); font-weight: 700; }
-.match-diff { color: var(--warn); font-weight: 700; }
-.game-item {
-  display: flex; align-items: center; gap: 11px; padding: 10px 0;
-  border-bottom: 1px solid var(--border);
-}
-.game-item:last-child { border-bottom: none; }
-.app-ico {
-  width: 38px; height: 38px; border-radius: 10px; background: var(--surface-2);
-  flex-shrink: 0; display: flex; align-items: center; justify-content: center;
-  font-weight: 800; color: var(--accent); overflow: hidden; position: relative;
-}
-.app-ico img { width: 100%; height: 100%; object-fit: cover; position: absolute; inset: 0; }
-.game-meta { flex: 1; min-width: 0; }
-.game-name { font-size: 14px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.game-pkg { font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.fps-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
-.fps-tag {
-  font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 999px;
-  background: var(--accent-soft); color: var(--accent);
-}
-.chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.btn.sec { background: var(--fill); color: var(--fg); }
+.btn.danger { background: var(--err-bg); color: var(--err); }
+.btn.sm { padding: 5px 10px; font-size: 12px; border-radius: 9px; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
 .chip {
-  padding: 6px 12px; border-radius: 999px; font-size: 12px; font-weight: 700;
-  background: var(--surface-2); color: var(--text); border: 1px solid var(--border); cursor: pointer;
+  padding: 5px 11px; border-radius: 999px; font-size: 12px; font-weight: 650;
+  background: var(--fill); color: var(--fg); border: 1px solid transparent; cursor: pointer;
 }
-.chip.active { background: var(--accent); color: #fff; border-color: var(--accent); }
-.tune-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 10px; }
-.tune-field label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
-pre.logbox {
-  margin: 0; background: var(--surface-2); border-radius: 12px; padding: 10px 12px;
-  font-size: 11px; font-family: ui-monospace, monospace; overflow-x: auto;
-  max-height: 240px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
+.chip.active { background: var(--accent); color: #fff; }
+.tune-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 8px; }
+.tune-grid label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
+pre.log {
+  margin: 8px 0 0; background: var(--fill); border-radius: 10px; padding: 9px 10px;
+  font-size: 11px; font-family: ui-monospace, monospace; max-height: 160px;
+  overflow: auto; white-space: pre-wrap; word-break: break-all;
 }
-nav.tabbar {
+.foot {
+  text-align: center; font-size: 11px; color: var(--muted);
+  font-family: ui-monospace, monospace; margin-top: 4px; padding: 4px 0;
+}
+.empty { text-align: center; color: var(--muted); padding: 16px 8px; font-size: 12.5px; }
+
+/* Bottom Nav (3 clean tabs) */
+nav.tabs {
   position: fixed; left: 0; right: 0; bottom: 0;
-  background: var(--surface); border-top: 1px solid var(--border);
-  padding: 6px 10px calc(var(--bot-inset) + 8px);
-  display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; z-index: 50;
+  background: var(--card); border-top: 1px solid var(--line);
+  padding: 6px 14px calc(var(--bot) + 8px);
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; z-index: 50;
 }
-.tab {
-  border: none; background: transparent; color: var(--muted); padding: 7px 4px;
-  border-radius: 12px; font-size: 12px; font-weight: 700; cursor: pointer;
+nav.tabs button {
+  border: none; background: transparent; color: var(--muted);
+  padding: 8px 6px; border-radius: 12px; font-size: 13px; font-weight: 700; cursor: pointer;
 }
-.tab.active { background: var(--accent-soft); color: var(--accent); }
+nav.tabs button.active { background: var(--accent-bg); color: var(--accent); }
 .panel { display: none; }
 .panel.active { display: block; }
+
+/* Modal */
 .modal-bg {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 80;
+  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5); z-index: 80;
   display: none; align-items: flex-end; justify-content: center;
 }
 .modal-bg.open { display: flex; }
 .modal {
-  width: 100%; max-width: 720px; max-height: 82vh; overflow-y: auto;
-  background: var(--surface); border-radius: 22px 22px 0 0;
-  padding: 16px 16px calc(var(--bot-inset) + 18px);
+  width: 100%; max-width: 640px; max-height: 82vh; overflow-y: auto;
+  background: var(--card); border-radius: 22px 22px 0 0;
+  padding: 16px 16px calc(var(--bot) + 18px);
 }
-.picker-list { max-height: 44vh; overflow-y: auto; margin-top: 8px; }
+.picker { max-height: 40vh; overflow-y: auto; margin-top: 8px; }
 .toast {
-  position: fixed; left: 50%; bottom: calc(var(--bot-inset) + 74px); transform: translateX(-50%);
-  background: #0f172a; color: #fff; padding: 8px 16px; border-radius: 999px;
-  font-size: 12px; font-weight: 600; opacity: 0; pointer-events: none; transition: 0.2s; z-index: 99;
+  position: fixed; left: 50%; bottom: calc(var(--bot) + 72px); transform: translateX(-50%);
+  background: #0f172a; color: #fff; padding: 7px 15px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; opacity: 0; pointer-events: none; transition: 0.18s; z-index: 99;
 }
-.toast.show { opacity: 0.96; }
-.empty { text-align: center; color: var(--muted); padding: 18px 8px; font-size: 13px; }
+.toast.show { opacity: 0.95; }
 </style>
 </head>
 <body>
@@ -281,288 +304,216 @@ nav.tabbar {
   <header class="top">
     <div class="brand">
       <img src="./kfas-logo.svg" alt="KFAS" />
-      <div>
-        <h1>KFAS 调度中心</h1>
-        <div class="sub" id="kernel-ver">正在读取内核状态...</div>
-      </div>
+      <h1>KFAS</h1>
+      <span class="ver-tag" id="kfas-ver">v--</span>
     </div>
-    <div class="top-actions">
-      <button class="icon-btn" id="btn-live" title="1.5秒实时刷新">● 实时</button>
-      <button class="icon-btn" id="btn-theme">主题</button>
-      <button class="icon-btn" id="btn-refresh">刷新</button>
+    <div class="top-acts">
+      <button class="chip-btn" id="btn-live">● 实时</button>
+      <button class="chip-btn" id="btn-refresh">↻</button>
     </div>
   </header>
 
   <div class="banner" id="offline-banner" style="display:none">
-    <strong>内核接口尚未激活（未检测到 /sys/kernel/kfas）</strong><br />
-    请先刷入刚下载好的 AnyKernel3 内核包并重启；重启后所有实时遥测、Scene 档位同步与线程落核将自动生效。你现在已可提前编辑下方的游戏名单。
+    未检测到 <code>/sys/kernel/kfas</code>，请确认已刷入 KFAS 内核。
   </div>
 
-  <!-- TAB 1: DASHBOARD -->
-  <section class="panel active" id="tab-dash">
+  <!-- TAB 1: STATUS -->
+  <section class="panel active" id="tab-status">
     <div class="card">
-      <div class="card-head">
+      <div class="head">
         <div>
-          <div class="card-title">运行档位（与 Scene 同步）</div>
-          <div class="card-sub" id="session-desc">待命中 · 非游戏 100% 原生 WALT</div>
+          <span class="pill muted" id="state-pill"><span class="dot"></span><span id="state-text">读取中</span></span>
+          <div class="sub" id="session-desc">等待内核状态...</div>
         </div>
-        <span class="pill muted" id="state-pill"><span class="dot"></span><span id="state-text">读取中</span></span>
+        <label class="sw" title="KFAS 总开关"><input type="checkbox" id="sw-enable" /><i></i></label>
       </div>
-      <div class="mode-grid" id="mode-grid">
-        <button class="mode-btn" data-mode="powersave"><span class="m-zh">省电</span><span class="m-en">powersave</span></button>
-        <button class="mode-btn" data-mode="balance"><span class="m-zh">均衡</span><span class="m-en">balance</span></button>
-        <button class="mode-btn" data-mode="performance"><span class="m-zh">性能</span><span class="m-en">performance</span></button>
-        <button class="mode-btn" data-mode="fast"><span class="m-zh">极速</span><span class="m-en">fast</span></button>
+      <div class="seg" id="mode-grid">
+        <button data-mode="powersave">省电</button>
+        <button data-mode="balance">均衡</button>
+        <button data-mode="performance">性能</button>
+        <button data-mode="fast">极速</button>
       </div>
     </div>
 
     <div class="card">
-      <div class="card-head">
-        <div class="card-title">实时帧率与瓶颈归因</div>
-        <span class="pill ok" id="bn-pill">OK</span>
+      <div class="head">
+        <div class="title">实时监测</div>
+        <span class="pill ok" id="bn-pill">稳帧</span>
       </div>
-      <div class="hero-stats">
-        <div class="stat-box">
-          <div class="stat-label">实时帧率</div>
-          <div class="stat-val" id="v-fps">--<span class="stat-unit">fps</span></div>
+      <div class="metrics">
+        <div class="m-box">
+          <div class="m-k">帧率</div>
+          <div class="m-v" id="v-fps">--<span class="m-u">fps</span></div>
         </div>
-        <div class="stat-box">
-          <div class="stat-label">锁定目标</div>
-          <div class="stat-val" id="v-tfps">--<span class="stat-unit">fps</span></div>
+        <div class="m-box">
+          <div class="m-k">算力负载</div>
+          <div class="m-v" id="v-perf">0<span class="m-u">%</span></div>
+          <div class="bar"><div class="bar-fill" id="v-perf-bar" style="width:0%"></div></div>
         </div>
-        <div class="stat-box">
-          <div class="stat-label">GPU 负载</div>
-          <div class="stat-val" id="v-gpu">--<span class="stat-unit">%</span></div>
+        <div class="m-box">
+          <div class="m-k">温度 / GPU</div>
+          <div class="m-v" id="v-temp">--<span class="m-u">°C</span></div>
         </div>
       </div>
-      <div class="bar-wrap">
-        <div class="bar-top"><span>算力需求指数 (Perf Level)</span><strong id="v-perf">0 / 1000</strong></div>
-        <div class="bar"><div class="bar-fill" id="v-perf-bar" style="width:0%"></div></div>
-      </div>
-      <div class="mini-grid">
-        <div class="mini-item"><span>帧耗时 (Frame)</span><strong id="v-frame">-- ms</strong></div>
-        <div class="mini-item"><span>CPU 真执行 (Exec)</span><strong id="v-exec">-- ms</strong></div>
-        <div class="mini-item"><span>调度排队 (Delay)</span><strong id="v-delay">-- ms</strong></div>
-        <div class="mini-item"><span>缓冲等待 (DQ Wait)</span><strong id="v-dq">-- ms</strong></div>
-        <div class="mini-item"><span>GPU 频率</span><strong id="v-gpufreq">-- MHz</strong></div>
-        <div class="mini-item"><span>CPU 温度</span><strong id="v-temp">-- °C</strong></div>
-        <div class="mini-item"><span>L3 / DDR 总线</span><strong id="v-dcvs">--</strong></div>
-        <div class="mini-item"><span>帧前 / 中帧救帧</span><strong id="v-rescues">0 / 0</strong></div>
-      </div>
-      <div class="cluster-list" id="cluster-list"></div>
+
+      <details class="fold" id="fold-detail">
+        <summary>展开详情（频段 · 总线 · 线程落核）</summary>
+        <div class="fold-body">
+          <div class="kv-grid">
+            <div class="kv"><span>帧耗时 / 执行</span><strong id="v-fe">--</strong></div>
+            <div class="kv"><span>排队 / 缓冲</span><strong id="v-dd">--</strong></div>
+            <div class="kv"><span>GPU 状态</span><strong id="v-gpu">--</strong></div>
+            <div class="kv"><span>L3 / DDR 总线</span><strong id="v-dcvs">--</strong></div>
+            <div class="kv"><span>帧前 / 中帧救帧</span><strong id="v-rescues">0 / 0</strong></div>
+            <div class="kv"><span>目标帧率</span><strong id="v-tfps">--</strong></div>
+          </div>
+          <div class="cl-list" id="cluster-list"></div>
+          <div class="th-wrap">
+            <table class="th">
+              <thead>
+                <tr><th>层</th><th>核</th><th>负载</th><th>uclamp</th><th>线程</th></tr>
+              </thead>
+              <tbody id="thread-tbody">
+                <tr><td colspan="5" class="empty">当前无受管活跃线程</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </details>
     </div>
 
-    <div class="card">
-      <div class="card-head">
-        <div class="card-title">内核开关与 A/B 对照</div>
-        <span class="card-sub" id="watcher-badge">哨兵: --</span>
-      </div>
-      <div class="row-switch">
-        <div>
-          <div class="r-title">KFAS 总开关</div>
-          <div class="r-desc">关闭后立即卸载探针并归还全部 FreqQoS 与线程状态</div>
-        </div>
-        <label class="sw"><input type="checkbox" id="sw-enable" /><span class="sw-track"></span></label>
-      </div>
-      <div class="row-switch">
-        <div>
-          <div class="r-title">精准线程放置引擎</div>
-          <div class="r-desc">自动识别渲染与主逻辑线程，经 WALT MVP 路由至 X3 / A715</div>
-        </div>
-        <label class="sw"><input type="checkbox" id="sw-place" /><span class="sw-track"></span></label>
-      </div>
-      <div class="row-switch">
-        <div>
-          <div class="r-title">杂线程隔离上限</div>
-          <div class="r-desc">限制同进程低载杂线程 uclamp 上限，避免抢占 X3 / A715</div>
-        </div>
-        <label class="sw"><input type="checkbox" id="sw-workers" /><span class="sw-track"></span></label>
-      </div>
-      <div class="row-switch">
-        <div>
-          <div class="r-title">游戏期解除大核/X3 暂停</div>
-          <div class="r-desc">渲染激活期调用 core_ctl_set_boost，退出或空闲 1s 自动恢复</div>
-        </div>
-        <label class="sw"><input type="checkbox" id="sw-unpause" /><span class="sw-track"></span></label>
-      </div>
-      <div class="row-switch">
-        <div>
-          <div class="r-title">日常应用线程加速与杂项隔离</div>
-          <div class="r-desc">非游戏前台自动路由 UI/RenderThread 至 A715 并把广告/日志/后台杂线程压回小核（零轮询、零控频、排除银行支付）</div>
-        </div>
-        <label class="sw"><input type="checkbox" id="sw-daily" /><span class="sw-track"></span></label>
-      </div>
-      <div class="row-switch">
-        <div>
-          <div class="r-title">L3 / DDR 总线 DCVS 协同</div>
-          <div class="r-desc">游戏高帧压或提前救帧时经 qcom_dcvs 慢路径温和托底 L3/DDR，稳帧或空闲自动归零</div>
-        </div>
-        <label class="sw"><input type="checkbox" id="sw-dcvs" /><span class="sw-track"></span></label>
-      </div>
-      <div style="padding-top:10px">
-        <div class="r-title" style="font-size:13px">自定义 VIP 线程名前缀（可选，逗号分隔）</div>
-        <div class="input-row">
-          <input type="text" id="in-vip" placeholder="例如: UnityMain,GameThread,RHIThread（留空自动识别）" />
-          <button class="btn sm" id="btn-vip">保存</button>
-        </div>
-      </div>
-    </div>
+    <div class="foot" id="foot-meta">--</div>
   </section>
 
-  <!-- TAB 2: THREAD PLACEMENT -->
-  <section class="panel" id="tab-threads">
-    <div class="card">
-      <div class="card-head">
-        <div>
-          <div class="card-title">SM8550 拓扑与桥接状态</div>
-          <div class="card-sub" id="topo-summary">等待 KFAS 内核上报...</div>
-        </div>
-        <span class="pill muted" id="walt-pill">WALT 桥接</span>
-      </div>
-      <div class="card-sub" style="margin-bottom:8px">
-        游戏模式：T0=渲染线程，T1=主逻辑线程，T2=杂线程；日常模式：T0=UI主线程/RenderThread→A715，T2=低优/杂项→小核。绿色表示目标与实际核一致。
-      </div>
-      <div style="overflow-x:auto">
-        <table class="thread-table">
-          <thead>
-            <tr>
-              <th>TID</th><th>层级</th><th>目标→实际</th><th>负载</th><th>uclamp</th><th>线程名</th>
-            </tr>
-          </thead>
-          <tbody id="thread-tbody">
-            <tr><td colspan="6" class="empty">当前无活跃游戏渲染会话（进入游戏后开启顶部「● 实时」即可观测）</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-  </section>
-
-  <!-- TAB 3: GAMES -->
+  <!-- TAB 2: GAMES -->
   <section class="panel" id="tab-games">
     <div class="card">
-      <div class="card-head">
+      <div class="head" style="margin-bottom:8px">
         <div>
-          <div class="card-title">受管游戏名单</div>
-          <div class="card-sub" id="games-count">共 0 款 · 仅名单内应用激活 KFAS</div>
+          <div class="title">受管游戏</div>
+          <div class="sub" id="games-count">共 0 款</div>
         </div>
-        <button class="btn sm" id="btn-open-picker">+ 添加应用</button>
+        <button class="btn sm" id="btn-open-picker">+ 添加</button>
       </div>
-      <div id="games-list"><div class="empty">正在加载名单...</div></div>
+      <div id="games-list"><div class="empty">加载中...</div></div>
     </div>
   </section>
 
-  <!-- TAB 4: TUNING & LOGS -->
-  <section class="panel" id="tab-tune">
+  <!-- TAB 3: SETTINGS -->
+  <section class="panel" id="tab-settings">
     <div class="card">
-      <div class="card-head">
-        <div>
-          <div class="card-title">分档位实时热调（重启自动持久化）</div>
-          <div class="card-sub">修改后即刻写入 /sys/kernel/kfas/tuning，无需重刷内核</div>
-        </div>
-        <button class="btn sec sm" id="btn-reset-tune">清除覆盖</button>
+      <div class="sw-row">
+        <div><div class="sw-t">日常线程加速</div><div class="sw-d">UI 落 A715 · 杂项压小核（排除支付）</div></div>
+        <label class="sw"><input type="checkbox" id="sw-daily" /><i></i></label>
       </div>
-      <div class="chip-row" id="tune-mode-chips">
-        <button class="chip" data-tmode="powersave">省电</button>
-        <button class="chip active" data-tmode="balance">均衡</button>
-        <button class="chip" data-tmode="performance">性能</button>
-        <button class="chip" data-tmode="fast">极速</button>
+      <div class="sw-row">
+        <div><div class="sw-t">游戏精准放核</div><div class="sw-d">渲染与主逻辑经 WALT MVP 路由</div></div>
+        <label class="sw"><input type="checkbox" id="sw-place" /><i></i></label>
       </div>
-      <div class="tune-grid" id="tune-grid"></div>
-      <div style="margin-top:12px; display:flex; justify-content:flex-end;">
-        <button class="btn" id="btn-save-tune">应用并保存当前档位参数</button>
+      <div class="sw-row">
+        <div><div class="sw-t">杂线程隔离</div><div class="sw-d">限制低载杂线程上限防抢大核</div></div>
+        <label class="sw"><input type="checkbox" id="sw-workers" /><i></i></label>
+      </div>
+      <div class="sw-row">
+        <div><div class="sw-t">大核解暂停</div><div class="sw-d">游戏渲染期按需唤醒 X3</div></div>
+        <label class="sw"><input type="checkbox" id="sw-unpause" /><i></i></label>
+      </div>
+      <div class="sw-row">
+        <div><div class="sw-t">L3 / DDR 总线协同</div><div class="sw-d">高帧压或救帧时按需托底，空闲归零</div></div>
+        <label class="sw"><input type="checkbox" id="sw-dcvs" /><i></i></label>
       </div>
     </div>
 
     <div class="card">
-      <div class="card-head">
-        <div class="card-title">探针与哨兵维护</div>
-        <div class="card-sub" id="probes-text">--</div>
-      </div>
-      <div class="chip-row">
-        <button class="btn sec sm" id="btn-probes">重新解析 libgui 偏移</button>
-        <button class="btn sec sm" id="btn-restart-w">重启前台哨兵</button>
-        <button class="btn danger sm" id="btn-detach">强制断开当前会话</button>
-      </div>
-      <pre class="logbox" id="log-box">暂无日志</pre>
+      <details class="fold" style="margin-top:0;border-top:none;padding-top:0">
+        <summary>分档参数热调（高级）</summary>
+        <div class="fold-body">
+          <div class="chips" id="tune-mode-chips">
+            <button class="chip" data-tmode="powersave">省电</button>
+            <button class="chip active" data-tmode="balance">均衡</button>
+            <button class="chip" data-tmode="performance">性能</button>
+            <button class="chip" data-tmode="fast">极速</button>
+          </div>
+          <div class="tune-grid" id="tune-grid"></div>
+          <div style="margin-top:10px;display:flex;justify-content:space-between;gap:8px">
+            <button class="btn sec sm" id="btn-reset-tune">清除覆盖</button>
+            <button class="btn sm" id="btn-save-tune">保存参数</button>
+          </div>
+        </div>
+      </details>
+
+      <details class="fold">
+        <summary>VIP 线程与维护工具</summary>
+        <div class="fold-body">
+          <div class="sub">自定义 VIP 线程前缀（逗号分隔，留空自动识别）</div>
+          <div class="in-row">
+            <input type="text" id="in-vip" placeholder="UnityMain,GameThread" />
+            <button class="btn sm" id="btn-vip">保存</button>
+          </div>
+          <div class="sub" style="margin-top:10px" id="probes-text">探针: --</div>
+          <div class="chips">
+            <button class="btn sec sm" id="btn-probes">解析探针</button>
+            <button class="btn sec sm" id="btn-restart-w">重启哨兵</button>
+            <button class="btn danger sm" id="btn-detach">断开会话</button>
+          </div>
+          <pre class="log" id="log-box" style="display:none"></pre>
+        </div>
+      </details>
     </div>
   </section>
 </div>
 
-<!-- GAME ADD / EDIT MODAL -->
+<!-- GAME PICKER MODAL -->
 <div class="modal-bg" id="game-modal">
   <div class="modal">
-    <div class="card-head">
-      <div class="card-title" id="modal-title">添加受管游戏</div>
+    <div class="head" style="margin-bottom:10px">
+      <div class="title" id="modal-title">添加游戏</div>
       <button class="btn sec sm" id="btn-close-modal">关闭</button>
     </div>
-    <input type="text" id="app-search" placeholder="搜索已装应用名或直接输入包名..." />
-    <div class="picker-list" id="picker-list"></div>
-    <div style="margin-top:10px">
-      <div class="card-sub">已选包名</div>
-      <input type="text" id="edit-pkg" placeholder="com.example.game" style="margin-top:4px" />
+    <input type="text" id="app-search" placeholder="搜索应用名或包名..." />
+    <div class="picker" id="picker-list"></div>
+    <input type="text" id="edit-pkg" placeholder="com.example.game" style="margin-top:10px" />
+    <div class="chips" id="fps-chips" style="margin-top:10px">
+      <button class="chip" data-fps="30">30</button>
+      <button class="chip" data-fps="45">45</button>
+      <button class="chip active" data-fps="60">60</button>
+      <button class="chip" data-fps="90">90</button>
+      <button class="chip" data-fps="120">120</button>
+      <button class="chip" data-fps="144">144</button>
     </div>
-    <div style="margin-top:10px">
-      <div class="card-sub">目标帧率候选项（点击多选，内核自动锁档）</div>
-      <div class="chip-row" id="fps-chips">
-        <button class="chip" data-fps="24">24</button>
-        <button class="chip" data-fps="30">30</button>
-        <button class="chip" data-fps="45">45</button>
-        <button class="chip active" data-fps="60">60</button>
-        <button class="chip" data-fps="90">90</button>
-        <button class="chip" data-fps="120">120</button>
-        <button class="chip" data-fps="144">144</button>
-      </div>
-    </div>
-    <div style="display:flex; gap:8px; margin-top:12px">
-      <button class="btn" style="flex:1" id="btn-save-game">保存游戏配置</button>
-    </div>
+    <button class="btn" style="width:100%;margin-top:8px" id="btn-save-game">保存</button>
   </div>
 </div>
 
-<nav class="tabbar">
-  <button class="tab active" data-tab="tab-dash">概览</button>
-  <button class="tab" data-tab="tab-threads">线程落核</button>
-  <button class="tab" data-tab="tab-games">游戏名单</button>
-  <button class="tab" data-tab="tab-tune">调参日志</button>
+<nav class="tabs">
+  <button class="active" data-tab="tab-status">状态</button>
+  <button data-tab="tab-games">游戏</button>
+  <button data-tab="tab-settings">设置</button>
 </nav>
 <div class="toast" id="toast"></div>
 
 <script>
 const CTL = '/data/adb/modules/kfas_ctrl/kfas_ctl.sh';
 const $ = id => document.getElementById(id);
-let cbSeq = 0;
-let liveTimer = null;
-let installedApps = [];
-let lastGamesSig = '';
-let lastTuneSig = '';
+let cbSeq = 0, liveTimer = null, inFlight = false, installedApps = [], lastGamesSig = '', lastTuneSig = '';
 const labelCache = new Map();
 const state = {
-  meta: {},
-  status: {},
-  clusters: [],
-  topoLine: '',
-  threads: [],
-  tuning: {},
-  games: [],
-  log: '',
-  editTuneMode: 'balance',
-  theme: localStorage.getItem('kfas.theme') || 'system',
+  meta: {}, status: {}, clusters: [], topoLine: '', threads: [],
+  tuning: {}, games: [], log: '', editTuneMode: 'balance',
 };
-
 const TUNE_FIELDS = [
-  { key: 'margin_pct', label: '帧预算余量 margin_pct (%)', min: 0, max: 35 },
-  { key: 'up_gain', label: '升频增益 up_gain (20~400)', min: 20, max: 400 },
-  { key: 'down_gain', label: '降频增益 down_gain (10~300)', min: 10, max: 300 },
-  { key: 'down_hold', label: '降频稳帧保持帧数 down_hold', min: 2, max: 120 },
-  { key: 'little_floor_khz', label: '小核保底上限 little_floor (kHz)', min: 0, max: 2016000 },
-  { key: 'temp_mc', label: '软温控阈值 temp_mc (0=关闭)', min: 0, max: 110000 },
-  { key: 'crit_umin', label: '关键线程基础 uclamp_min', min: 0, max: 1024 },
-  { key: 'worker_umax', label: '杂线程隔离 uclamp_max', min: 0, max: 1024 },
-  { key: 'prime', label: '超大核 X3 介入 prime (0/1)', min: 0, max: 1 },
+  { key: 'margin_pct', label: '预算余量 (%)', min: 0, max: 35 },
+  { key: 'up_gain', label: '升频增益', min: 20, max: 400 },
+  { key: 'down_gain', label: '降频增益', min: 10, max: 300 },
+  { key: 'down_hold', label: '稳帧保持帧数', min: 2, max: 120 },
+  { key: 'little_floor_khz', label: '小核保底 (kHz)', min: 0, max: 2016000 },
+  { key: 'temp_mc', label: '软温控 (mC, 0关)', min: 0, max: 110000 },
+  { key: 'crit_umin', label: '关键 uclamp_min', min: 0, max: 1024 },
+  { key: 'worker_umax', label: '杂项 uclamp_max', min: 0, max: 1024 },
+  { key: 'prime', label: '超大核介入 (0/1)', min: 0, max: 1 },
 ];
 
-function shQuote(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
-
+const shQuote = s => "'" + String(s).replace(/'/g, "'\\''") + "'";
 function toast(msg) {
   if (window.ksu && typeof window.ksu.toast === 'function') {
     try { window.ksu.toast(msg); } catch (_) {}
@@ -571,72 +522,51 @@ function toast(msg) {
   el.textContent = msg;
   el.classList.add('show');
   clearTimeout(el._t);
-  el._t = setTimeout(() => el.classList.remove('show'), 2200);
+  el._t = setTimeout(() => el.classList.remove('show'), 2000);
 }
 
 function ksuExec(cmd) {
   return new Promise((resolve, reject) => {
     if (!window.ksu || typeof window.ksu.exec !== 'function') {
-      reject(new Error('请在 KernelSU Manager WebUI 中打开'));
+      reject(new Error('请在 KernelSU Manager 中打开'));
       return;
     }
-    const name = '__kfas_cb_' + Date.now() + '_' + (++cbSeq);
+    const name = '__kfas_' + Date.now() + '_' + (++cbSeq);
     let timer;
     window[name] = (errno, stdout, stderr) => {
-      clearTimeout(timer);
-      delete window[name];
-      const code = Number(errno || 0);
-      if (code !== 0) reject(new Error((stderr || stdout || ('exit ' + code)).trim()));
-      else resolve(String(stdout || ''));
+      clearTimeout(timer); delete window[name];
+      Number(errno || 0) ? reject(new Error((stderr || stdout || ('exit ' + errno)).trim()))
+                         : resolve(String(stdout || ''));
     };
-    timer = setTimeout(() => {
-      delete window[name];
-      reject(new Error('命令执行超时'));
-    }, 10000);
-    try {
-      window.ksu.exec(cmd, null, name);
-    } catch (e) {
-      clearTimeout(timer);
-      delete window[name];
-      reject(e);
-    }
+    timer = setTimeout(() => { delete window[name]; reject(new Error('超时')); }, 10000);
+    try { window.ksu.exec(cmd, null, name); }
+    catch (e) { clearTimeout(timer); delete window[name]; reject(e); }
   });
 }
-
-function ctl(...args) {
-  return ksuExec('sh ' + shQuote(CTL) + ' ' + args.map(shQuote).join(' '));
-}
-
-function applyTheme() {
-  if (state.theme === 'system') document.documentElement.removeAttribute('data-theme');
-  else document.documentElement.setAttribute('data-theme', state.theme);
-  $('btn-theme').textContent = state.theme === 'dark' ? '深色' : state.theme === 'light' ? '浅色' : '自动';
-}
+const ctl = (...args) => ksuExec('sh ' + shQuote(CTL) + ' ' + args.map(shQuote).join(' '));
 
 function loadAppLabels(pkgs) {
   const missing = pkgs.filter(p => p && !labelCache.has(p));
   if (!missing.length) return;
   try {
     let raw = null;
-    if (window.ksu && typeof window.ksu.getPackagesInfo === 'function') {
+    if (window.ksu && typeof window.ksu.getPackagesInfo === 'function')
       raw = window.ksu.getPackagesInfo(JSON.stringify(missing));
-    } else if (window.ksu && typeof window.ksu.pm === 'function') {
+    else if (window.ksu && typeof window.ksu.pm === 'function') {
       const pm = window.ksu.pm();
-      if (pm && typeof pm.getPackagesInfo === 'function') {
+      if (pm && typeof pm.getPackagesInfo === 'function')
         raw = pm.getPackagesInfo(JSON.stringify(missing));
-      }
     }
     if (raw) {
-      for (const item of JSON.parse(raw)) {
-        if (item && item.packageName && item.appLabel && !item.error) {
-          labelCache.set(String(item.packageName), String(item.appLabel).trim());
-        }
+      for (const it of JSON.parse(raw)) {
+        if (it && it.packageName && it.appLabel && !it.error)
+          labelCache.set(String(it.packageName), String(it.appLabel).trim());
       }
     }
   } catch (_) {}
 }
 
-function parseSections(raw) {
+function parseSnapshot(raw) {
   const sec = {};
   let cur = '';
   for (const line of raw.split(/\r?\n/)) {
@@ -644,11 +574,6 @@ function parseSections(raw) {
     if (m) { cur = m[1]; sec[cur] = []; continue; }
     if (cur && cur !== 'END') sec[cur].push(line);
   }
-  return sec;
-}
-
-function parseSnapshot(raw) {
-  const sec = parseSections(raw);
   const meta = {};
   for (const l of (sec.META || [])) {
     const i = l.indexOf('=');
@@ -656,23 +581,17 @@ function parseSnapshot(raw) {
   }
   state.meta = meta;
 
-  const st = {};
-  const clusters = [];
+  const st = {}, clusters = [];
   for (const l of (sec.STATUS || [])) {
-    if (l.startsWith('cluster')) {
-      clusters.push(l);
-      continue;
-    }
+    if (l.startsWith('cluster')) { clusters.push(l); continue; }
     if (l.startsWith('dcvs:')) {
-      const cleanD = l.replace(/^dcvs:\s*/, '');
-      for (const tok of cleanD.split(/\s+/)) {
+      for (const tok of l.replace(/^dcvs:\s*/, '').split(/\s+/)) {
         const i = tok.indexOf('=');
         if (i > 0) st['dcvs_' + tok.slice(0, i)] = tok.slice(i + 1);
       }
       continue;
     }
-    const clean = l.replace(/^(ema_us|gpu|daily):\s*/, '');
-    for (const tok of clean.split(/\s+/)) {
+    for (const tok of l.replace(/^(ema_us|gpu|daily):\s*/, '').split(/\s+/)) {
       const i = tok.indexOf('=');
       if (i > 0) st[tok.slice(0, i)] = tok.slice(i + 1);
     }
@@ -682,17 +601,16 @@ function parseSnapshot(raw) {
 
   const thLines = sec.THREADS || [];
   state.topoLine = thLines[0] || '';
-  const threads = [];
+  state.threads = [];
   for (const l of thLines.slice(2)) {
     const p = l.split('\t');
     if (p.length >= 8) {
-      threads.push({
+      state.threads.push({
         tid: p[0], tier: p[1], assign: Number(p[2]), actual: Number(p[3]),
-        demand: p[4], execUs: p[5], uclamp: p[6], comm: p.slice(7).join('\t'),
+        demand: p[4], uclamp: p[6], comm: p.slice(7).join('\t'),
       });
     }
   }
-  state.threads = threads;
 
   const tuning = {};
   for (const l of (sec.TUNING || [])) {
@@ -720,239 +638,217 @@ function parseSnapshot(raw) {
   }
   state.games = games;
   loadAppLabels(games.map(g => g.pkg));
-  state.log = (sec.LOG || []).join('\n');
+  state.log = (sec.LOG || []).join('\n').trim();
 }
 
-function fmtMs(usStr) {
-  const v = Number(usStr);
-  if (!isFinite(v) || v <= 0) return '--';
-  return (v / 1000).toFixed(2) + ' ms';
-}
+const fmtMs = us => { const v = Number(us); return isFinite(v) && v > 0 ? (v / 1000).toFixed(1) + 'ms' : '--'; };
 
 function renderAll() {
-  const m = state.meta;
-  const st = state.status;
-  const present = m.kfas_present === '1';
-
-  $('kernel-ver').textContent = m.kernel || 'Android Kernel';
+  const m = state.meta, st = state.status, present = m.kfas_present === '1';
+  $('kfas-ver').textContent = st.version ? ('v' + st.version) : 'offline';
   $('offline-banner').style.display = present ? 'none' : 'block';
 
-  const active = st.active === '1';
-  const rendering = st.rendering === '1';
   const pill = $('state-pill');
   if (!present) {
-    pill.className = 'pill warn'; $('state-text').textContent = '待刷入内核';
-    $('session-desc').textContent = '当前内核未内置 KFAS 接口';
+    pill.className = 'pill warn'; $('state-text').textContent = '未激活';
+    $('session-desc').textContent = '当前内核未内置 KFAS';
   } else if (m.enable !== '1') {
     pill.className = 'pill muted'; $('state-text').textContent = '已停用';
-    $('session-desc').textContent = '总开关关闭 · 原生 WALT 接管';
-  } else if (rendering) {
-    pill.className = 'pill ok'; $('state-text').textContent = '局内接管中';
-    $('session-desc').textContent = 'PID ' + (st.pid || '-') + ' · 渲染 TID ' + (st.render_tid || '-');
-  } else if (active) {
-    pill.className = 'pill warn'; $('state-text').textContent = '已挂载等待渲染';
-    $('session-desc').textContent = 'PID ' + (st.pid || '-') + ' · 加载/暂停期间自动释放上限';
+    $('session-desc').textContent = '原生 WALT 接管';
+  } else if (st.rendering === '1') {
+    pill.className = 'pill ok'; $('state-text').textContent = '游戏控帧中';
+    $('session-desc').textContent = 'PID ' + (st.pid || '-') + ' · 渲染 ' + (st.render_tid || '-');
+  } else if (st.active === '1') {
+    pill.className = 'pill warn'; $('state-text').textContent = '等待渲染';
+    $('session-desc').textContent = 'PID ' + (st.pid || '-') + ' · 空闲自动释放';
   } else if (st.daily_active === '1') {
-    pill.className = 'pill ok'; $('state-text').textContent = '日常线程加速中';
-    $('session-desc').textContent = 'PID ' + (st.daily_pid || '-') + ' · UI关键 ' + (st.daily_crit || 0) + ' / 杂项隔离 ' + (st.daily_trash || 0) + '（零控频干扰）';
+    pill.className = 'pill ok'; $('state-text').textContent = '日常加速中';
+    $('session-desc').textContent = 'PID ' + (st.daily_pid || '-') + ' · UI ' + (st.daily_crit || 0) + ' / 隔离 ' + (st.daily_trash || 0);
   } else {
     pill.className = 'pill muted'; $('state-text').textContent = '待机直通';
-    $('session-desc').textContent = '100% 原生 WALT（零干扰）';
+    $('session-desc').textContent = '原生 WALT · 零干预';
   }
 
   const curMode = m.mode || st.mode || 'balance';
-  document.querySelectorAll('#mode-grid .mode-btn').forEach(b => {
+  document.querySelectorAll('#mode-grid button').forEach(b => {
     b.classList.toggle('active', b.dataset.mode === curMode);
   });
 
-  $('v-fps').innerHTML = (st.cur_fps && st.cur_fps !== '0.0' ? st.cur_fps : '--') + '<span class="stat-unit">fps</span>';
-  $('v-tfps').innerHTML = (st.target_fps && st.target_fps !== '0' ? st.target_fps : '--') + '<span class="stat-unit">fps</span>';
-  const gpuBusy = (st.busy || '').replace('%', '');
-  $('v-gpu').innerHTML = (st.valid === '1' ? gpuBusy : '--') + '<span class="stat-unit">%</span>';
+  // Hero 3 metrics
+  $('v-fps').innerHTML = (st.cur_fps && st.cur_fps !== '0.0' ? st.cur_fps : '--') + '<span class="m-u">fps</span>';
+  const perfNum = Math.max(0, Math.min(1000, Number((st.perf || '0').split('/')[0]) || 0));
+  const perfPct = Math.round(perfNum / 10);
+  $('v-perf').innerHTML = perfPct + '<span class="m-u">%</span>';
+  $('v-perf-bar').style.width = perfPct + '%';
 
-  const perfRaw = (st.perf || '0/1000').split('/')[0];
-  const perfNum = Math.max(0, Math.min(1000, Number(perfRaw) || 0));
-  $('v-perf').textContent = perfNum + ' / 1000';
-  $('v-perf-bar').style.width = (perfNum / 10) + '%';
-
-  const bn = st.bn || 'OK';
-  const bnEl = $('bn-pill');
-  bnEl.textContent = bn === 'OK' ? '稳帧 OK' : bn === 'CPU' ? 'CPU 瓶颈' : bn === 'SCHED' ? 'SCHED 调度排队' : 'GPU 瓶颈';
-  bnEl.className = 'pill ' + (bn === 'OK' ? 'ok' : bn === 'CPU' ? 'err' : bn === 'SCHED' ? 'warn' : 'gpu');
-
-  $('v-frame').textContent = fmtMs(st.frame);
-  $('v-exec').textContent = fmtMs(st.exec);
-  $('v-delay').textContent = fmtMs(st.delay);
-  $('v-dq').textContent = fmtMs(st.dq_wait);
-  $('v-gpufreq').textContent = st.freq || '--';
   const tempMc = Number((st.cpu_temp || '').replace('mC', ''));
-  $('v-temp').textContent = tempMc > 0 ? (tempMc / 1000).toFixed(1) + ' °C' : '--';
+  const gpuBusy = (st.busy || '').replace('%', '');
+  $('v-temp').innerHTML = (tempMc > 0 ? Math.round(tempMc / 1000) + '<span class="m-u">°C</span>' : '--') +
+    (st.valid === '1' ? '<span class="m-u"> / ' + gpuBusy + '%</span>' : '');
+
+  const bn = st.bn || 'OK', bnEl = $('bn-pill');
+  if (st.rendering !== '1') {
+    bnEl.textContent = '待机';
+    bnEl.className = 'pill muted';
+  } else {
+    bnEl.textContent = bn === 'OK' ? '稳帧' : bn === 'CPU' ? 'CPU 压力' : bn === 'SCHED' ? '调度排队' : 'GPU 瓶颈';
+    bnEl.className = 'pill ' + (bn === 'OK' ? 'ok' : bn === 'CPU' ? 'err' : bn === 'SCHED' ? 'warn' : 'gpu');
+  }
+
+  // Detail fold
+  $('v-fe').textContent = fmtMs(st.frame) + ' / ' + fmtMs(st.exec);
+  $('v-dd').textContent = fmtMs(st.delay) + ' / ' + fmtMs(st.dq_wait);
+  $('v-gpu').textContent = st.valid === '1' ? ((st.freq || '--') + ' · ' + (st.busy || '0%')) : '--';
   if (st.dcvs_bridge === '1') {
-    const l3Cur = Number((st.dcvs_l3 || '0/0').split('/')[0]) || 0;
-    const ddrCur = Number((st.dcvs_ddr || '0/0').split('/')[0]) || 0;
-    $('v-dcvs').textContent = (l3Cur ? Math.round(l3Cur / 1000) + 'M' : '释放') +
-      ' / ' + (ddrCur ? Math.round(ddrCur / 1000) + 'M' : '释放');
+    const l3 = Number((st.dcvs_l3 || '0').split('/')[0]) || 0;
+    const ddr = Number((st.dcvs_ddr || '0').split('/')[0]) || 0;
+    $('v-dcvs').textContent = (l3 ? Math.round(l3 / 1000) + 'M' : '自动') + ' / ' + (ddr ? Math.round(ddr / 1000) + 'M' : '自动');
   } else {
     $('v-dcvs').textContent = '未桥接';
   }
   $('v-rescues').textContent = (st.pre_rescues || '0') + ' / ' + (st.rescues || '0');
+  $('v-tfps').textContent = st.target_fps && st.target_fps !== '0' ? (st.target_fps + ' Hz') : '--';
 
   const clRoot = $('cluster-list');
   clRoot.replaceChildren();
-  const clNames = ['小核簇 (A510)', '中大核簇 (A715+A710)', '超大核 (X3)'];
+  const names = ['小核 A510', '中核 A715', '超大核 X3'];
   state.clusters.forEach((line, idx) => {
-    const pm = /policy(\d+)/.exec(line);
-    const kneeM = /knee=(\d+)/.exec(line);
-    const minM = /min=(\d+)/.exec(line);
-    const maxM = /max=(\d+)/.exec(line);
-    const minK = minM ? Number(minM[1]) : 0;
-    const maxK = maxM ? Number(maxM[1]) : 0;
-    const kneeK = kneeM ? Number(kneeM[1]) : 0;
+    const minK = Number((/min=(\d+)/.exec(line) || [])[1] || 0);
+    const maxK = Number((/max=(\d+)/.exec(line) || [])[1] || 0);
+    const kneeK = Number((/knee=(\d+)/.exec(line) || [])[1] || 0);
     const row = document.createElement('div');
-    row.className = 'cluster-row';
-    const left = document.createElement('span');
-    left.textContent = (clNames[idx] || ('Cluster ' + idx)) +
-      (pm ? ' · p' + pm[1] : '') +
-      (kneeK ? ' (拐点 ' + Math.round(kneeK / 1000) + 'M)' : '');
-    const right = document.createElement('strong');
-    right.textContent = 'min ' + (minK ? Math.round(minK / 1000) + 'M' : '释放') +
-      ' / max ' + (maxK ? Math.round(maxK / 1000) + 'M' : '无限制');
-    row.append(left, right);
+    row.className = 'cl-row';
+    const l = document.createElement('span');
+    l.textContent = (names[idx] || ('簇 ' + idx)) + (kneeK ? ' · 拐点 ' + Math.round(kneeK / 1000) + 'M' : '');
+    const r = document.createElement('strong');
+    r.textContent = (minK ? Math.round(minK / 1000) + 'M' : '释放') + ' ~ ' + (maxK ? Math.round(maxK / 1000) + 'M' : '无上限');
+    row.append(l, r);
     clRoot.append(row);
   });
 
-  $('watcher-badge').textContent = m.watcher_pid && m.watcher_pid !== '0'
-    ? ('哨兵 PID ' + m.watcher_pid) : '哨兵未运行';
-  $('sw-enable').checked = m.enable === '1';
-  $('sw-place').checked = m.placement_enable === '1';
-  $('sw-workers').checked = m.contain_workers === '1';
-  $('sw-unpause').checked = m.unpause_big === '1';
-  $('sw-daily').checked = m.daily_enable === '1';
-  $('sw-dcvs').checked = m.dcvs_enable === '1';
-  if (document.activeElement !== $('in-vip')) $('in-vip').value = m.vip_comms || '';
-
-  // Threads tab
-  $('topo-summary').textContent = state.topoLine || '等待 KFAS 内核上报...';
-  const waltOk = state.topoLine.includes('walt_bridge=1');
-  $('walt-pill').className = 'pill ' + (waltOk ? 'ok' : 'muted');
-  $('walt-pill').textContent = waltOk ? 'WALT 已桥接' : 'WALT 未连接';
-
+  // Threads table
   const tb = $('thread-tbody');
   tb.replaceChildren();
   if (!state.threads.length) {
-    tb.innerHTML = '<tr><td colspan="6" class="empty">当前无活跃游戏渲染会话（进入游戏后开启顶部「● 实时」即可观测）</td></tr>';
+    tb.innerHTML = '<tr><td colspan="5" class="empty">当前无受管活跃线程</td></tr>';
   } else {
-    for (const t of state.threads) {
+    for (const t of state.threads.slice(0, 20)) {
       const tr = document.createElement('tr');
-      const assignTxt = t.assign >= 0 ? ('cpu' + t.assign) : '自动';
-      const matchCls = t.assign < 0 ? '' : (t.assign === t.actual ? 'match-ok' : 'match-diff');
-      tr.innerHTML =
-        `<td>${t.tid}</td>` +
-        `<td><span class="tier-badge tier-${t.tier}">${t.tier}</span></td>` +
-        `<td class="${matchCls}">${assignTxt} → cpu${t.actual}</td>` +
-        `<td>${t.demand}</td>` +
-        `<td>${t.uclamp}</td>` +
-        `<td></td>`;
+      const dst = t.assign >= 0 ? ('c' + t.assign) : '-';
+      const cls = t.assign < 0 ? '' : (t.assign === t.actual ? 'ok-txt' : 'warn-txt');
+      tr.innerHTML = `<td><span class="t-badge t-${t.tier}">${t.tier}</span></td>` +
+        `<td class="${cls}">${dst}→c${t.actual}</td>` +
+        `<td>${t.demand}</td><td>${t.uclamp}</td><td></td>`;
       tr.lastElementChild.textContent = t.comm;
       tb.append(tr);
     }
   }
 
-  // Games tab (skip DOM rebuild if unchanged so icons never flicker on live refresh)
-  $('games-count').textContent = '共 ' + state.games.length + ' 款 · 仅名单内应用激活 KFAS';
-  const gamesSig = JSON.stringify(state.games.map(g => [g.pkg, g.fps, labelCache.get(g.pkg) || '']));
-  if (gamesSig !== lastGamesSig) {
-    lastGamesSig = gamesSig;
+  // Footer meta
+  const waltOk = state.topoLine.includes('walt_bridge=1');
+  const dcvsOk = st.dcvs_bridge === '1';
+  const kshort = (m.kernel || '').split('-')[0] || 'Linux';
+  $('foot-meta').textContent = kshort +
+    ' · 哨兵 ' + (m.watcher_pid && m.watcher_pid !== '0' ? '✓' : '✕') +
+    ' · WALT ' + (waltOk ? '✓' : '✕') +
+    ' · DCVS ' + (dcvsOk ? '✓' : '✕');
+
+  // Switches
+  $('sw-enable').checked = m.enable === '1';
+  $('sw-daily').checked = m.daily_enable === '1';
+  $('sw-place').checked = m.placement_enable === '1';
+  $('sw-workers').checked = m.contain_workers === '1';
+  $('sw-unpause').checked = m.unpause_big === '1';
+  $('sw-dcvs').checked = m.dcvs_enable === '1';
+  if (document.activeElement !== $('in-vip')) $('in-vip').value = m.vip_comms || '';
+
+  // Games tab
+  $('games-count').textContent = '共 ' + state.games.length + ' 款';
+  const gSig = JSON.stringify(state.games.map(g => [g.pkg, g.fps, labelCache.get(g.pkg) || '']));
+  if (gSig !== lastGamesSig) {
+    lastGamesSig = gSig;
     const gl = $('games-list');
     gl.replaceChildren();
     if (!state.games.length) {
-      gl.innerHTML = '<div class="empty">名单为空，点击右上角「+ 添加应用」添加游戏</div>';
+      gl.innerHTML = '<div class="empty">名单为空，点击右上角「+ 添加」</div>';
     } else {
       for (const g of state.games) {
         const label = labelCache.get(g.pkg) || g.pkg;
         const item = document.createElement('div');
-        item.className = 'game-item';
+        item.className = 'g-item';
         const ico = document.createElement('div');
-        ico.className = 'app-ico';
-        ico.textContent = label.slice(0, 1).toUpperCase();
+        ico.className = 'ico'; ico.textContent = label.slice(0, 1).toUpperCase();
         const img = document.createElement('img');
-        img.loading = 'lazy';
-        img.src = 'ksu://icon/' + encodeURIComponent(g.pkg);
+        img.loading = 'lazy'; img.src = 'ksu://icon/' + encodeURIComponent(g.pkg);
         img.onerror = () => img.remove();
         ico.append(img);
 
         const meta = document.createElement('div');
-        meta.className = 'game-meta';
+        meta.className = 'g-meta';
         const nm = document.createElement('div');
-        nm.className = 'game-name'; nm.textContent = label;
-        const pk = document.createElement('div');
-        pk.className = 'game-pkg'; pk.textContent = g.pkg;
+        nm.className = 'g-name'; nm.textContent = label;
         const tags = document.createElement('div');
-        tags.className = 'fps-tags';
+        tags.className = 'g-tags';
         g.fps.split(',').forEach(f => {
           const sp = document.createElement('span');
-          sp.className = 'fps-tag'; sp.textContent = f.trim() + ' Hz';
+          sp.className = 'tag'; sp.textContent = f.trim() + 'Hz';
           tags.append(sp);
         });
-        meta.append(nm, pk, tags);
+        meta.append(nm, tags);
 
-        const actions = document.createElement('div');
-        actions.style.display = 'flex'; actions.style.gap = '6px';
-        const bEdit = document.createElement('button');
-        bEdit.className = 'btn sec sm'; bEdit.textContent = '改帧';
-        bEdit.onclick = () => openGameModal(g.pkg, g.fps);
-        const bDel = document.createElement('button');
-        bDel.className = 'btn danger sm'; bDel.textContent = '删';
-        bDel.onclick = async () => {
-          try { await ctl('game-del', g.pkg); toast('已移除 ' + label); await refresh(); }
-          catch (e) { toast('失败: ' + e.message); }
+        const acts = document.createElement('div');
+        acts.style.display = 'flex'; acts.style.gap = '6px';
+        const bE = document.createElement('button');
+        bE.className = 'btn sec sm'; bE.textContent = '编辑';
+        bE.onclick = () => openGameModal(g.pkg, g.fps);
+        const bD = document.createElement('button');
+        bD.className = 'btn danger sm'; bD.textContent = '删';
+        bD.onclick = async () => {
+          try { await ctl('game-del', g.pkg); toast('已移除'); await refresh(true); }
+          catch (e) { toast(e.message); }
         };
-        actions.append(bEdit, bDel);
-        item.append(ico, meta, actions);
+        acts.append(bE, bD);
+        item.append(ico, meta, acts);
         gl.append(item);
       }
     }
   }
 
-  // Tuning tab (never overwrite inputs while user is editing)
-  const editingTune = document.activeElement && document.activeElement.closest('#tune-grid');
-  const tuneSig = state.editTuneMode + ':' + JSON.stringify(state.tuning[state.editTuneMode] || {});
-  if (!editingTune && tuneSig !== lastTuneSig) {
-    lastTuneSig = tuneSig;
-    renderTuningForm();
+  // Tuning form
+  const editing = document.activeElement && document.activeElement.closest('#tune-grid');
+  const tSig = state.editTuneMode + ':' + JSON.stringify(state.tuning[state.editTuneMode] || {});
+  if (!editing && tSig !== lastTuneSig) {
+    lastTuneSig = tSig;
+    const cfg = state.tuning[state.editTuneMode] || {};
+    const grid = $('tune-grid');
+    grid.replaceChildren();
+    for (const f of TUNE_FIELDS) {
+      const box = document.createElement('div');
+      const lb = document.createElement('label'); lb.textContent = f.label;
+      const inp = document.createElement('input');
+      inp.type = 'number'; inp.min = String(f.min); inp.max = String(f.max);
+      inp.dataset.tkey = f.key;
+      inp.value = cfg[f.key] !== undefined ? cfg[f.key] : '';
+      box.append(lb, inp);
+      grid.append(box);
+    }
   }
-  $('probes-text').textContent = m.probes || '未配置';
-  $('log-box').textContent = state.log || '暂无日志';
-}
-
-function renderTuningForm() {
-  const cfg = state.tuning[state.editTuneMode] || {};
-  const grid = $('tune-grid');
-  grid.replaceChildren();
-  for (const f of TUNE_FIELDS) {
-    const box = document.createElement('div');
-    box.className = 'tune-field';
-    const lb = document.createElement('label');
-    lb.textContent = f.label;
-    const inp = document.createElement('input');
-    inp.type = 'number';
-    inp.min = String(f.min);
-    inp.max = String(f.max);
-    inp.dataset.tkey = f.key;
-    inp.value = cfg[f.key] !== undefined ? cfg[f.key] : '';
-    inp.placeholder = '--';
-    box.append(lb, inp);
-    grid.append(box);
-  }
+  $('probes-text').textContent = '探针: ' + (m.probes || '未配置');
+  const logEl = $('log-box');
+  if (state.log) { logEl.style.display = 'block'; logEl.textContent = state.log; }
+  else { logEl.style.display = 'none'; }
 }
 
 async function refresh(silent = false) {
+  if (inFlight) return;
+  inFlight = true;
   try {
-    const raw = await ctl('snapshot');
-    parseSnapshot(raw);
+    parseSnapshot(await ctl('snapshot'));
     renderAll();
   } catch (e) {
     if (!silent) toast('读取失败: ' + e.message);
+  } finally {
+    inFlight = false;
   }
 }
 
@@ -960,46 +856,37 @@ async function loadInstalledApps() {
   if (installedApps.length) return;
   let pkgs = [];
   try {
-    if (window.ksu && typeof window.ksu.listPackages === 'function') {
+    if (window.ksu && typeof window.ksu.listPackages === 'function')
       pkgs = JSON.parse(window.ksu.listPackages('user'));
-    }
   } catch (_) {}
   if (!pkgs.length) {
-    try {
-      const out = await ctl('list-apps');
-      pkgs = out.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-    } catch (_) {}
+    try { pkgs = (await ctl('list-apps')).split(/\r?\n/).map(s => s.trim()).filter(Boolean); }
+    catch (_) {}
   }
   loadAppLabels(pkgs);
   installedApps = pkgs.map(pkg => ({ pkg, label: labelCache.get(pkg) || pkg }))
     .sort((a, b) => a.label.localeCompare(b.label, 'zh-CN'));
 }
 
-function renderPicker(query) {
-  const q = (query || '').trim().toLowerCase();
+function renderPicker(q) {
+  const kw = (q || '').trim().toLowerCase();
   const root = $('picker-list');
   root.replaceChildren();
-  const list = installedApps.filter(a =>
-    !q || a.label.toLowerCase().includes(q) || a.pkg.toLowerCase().includes(q)
-  ).slice(0, 40);
-  if (!list.length) {
-    root.innerHTML = '<div class="empty">无匹配应用，可直接在下方手动填入包名</div>';
-    return;
-  }
+  const list = installedApps.filter(a => !kw || a.label.toLowerCase().includes(kw) || a.pkg.toLowerCase().includes(kw)).slice(0, 40);
+  if (!list.length) { root.innerHTML = '<div class="empty">无匹配，可直接输入包名</div>'; return; }
   for (const a of list) {
     const row = document.createElement('div');
-    row.className = 'game-item';
-    row.style.cursor = 'pointer';
+    row.className = 'g-item'; row.style.cursor = 'pointer';
     row.onclick = () => { $('edit-pkg').value = a.pkg; };
     const ico = document.createElement('div');
-    ico.className = 'app-ico'; ico.textContent = a.label.slice(0, 1).toUpperCase();
+    ico.className = 'ico'; ico.textContent = a.label.slice(0, 1).toUpperCase();
     const img = document.createElement('img');
     img.loading = 'lazy'; img.src = 'ksu://icon/' + encodeURIComponent(a.pkg);
     img.onerror = () => img.remove();
     ico.append(img);
     const meta = document.createElement('div');
-    meta.className = 'game-meta';
-    meta.innerHTML = '<div class="game-name"></div><div class="game-pkg"></div>';
+    meta.className = 'g-meta';
+    meta.innerHTML = '<div class="g-name"></div><div class="sub"></div>';
     meta.children[0].textContent = a.label;
     meta.children[1].textContent = a.pkg;
     row.append(ico, meta);
@@ -1007,17 +894,27 @@ function renderPicker(query) {
   }
 }
 
-async function openGameModal(pkg = '', fps = '60') {
-  $('modal-title').textContent = pkg ? '编辑游戏帧率档' : '添加受管游戏';
+async function openGameModal(pkg = '', fps = '60,120') {
+  $('modal-title').textContent = pkg ? '编辑帧率' : '添加游戏';
   $('edit-pkg').value = pkg;
   $('app-search').value = '';
-  const selected = new Set(String(fps).split(',').map(s => s.trim()));
-  document.querySelectorAll('#fps-chips .chip').forEach(c => {
-    c.classList.toggle('active', selected.has(c.dataset.fps));
-  });
+  $('app-search').style.display = pkg ? 'none' : 'block';
+  const sel = new Set(String(fps).split(',').map(s => s.trim()).filter(Boolean));
+  const opts = [...new Set(['30', '45', '60', '90', '120', '144', ...sel])]
+    .sort((a, b) => Number(a) - Number(b));
+  const fc = $('fps-chips');
+  fc.replaceChildren();
+  for (const f of opts) {
+    const b = document.createElement('button');
+    b.className = 'chip' + (sel.has(f) ? ' active' : '');
+    b.dataset.fps = f;
+    b.textContent = f;
+    b.onclick = () => b.classList.toggle('active');
+    fc.append(b);
+  }
   $('game-modal').classList.add('open');
   if (!pkg) {
-    $('picker-list').innerHTML = '<div class="empty">正在读取已装应用...</div>';
+    $('picker-list').innerHTML = '<div class="empty">读取应用中...</div>';
     await loadInstalledApps();
     renderPicker('');
   } else {
@@ -1025,51 +922,36 @@ async function openGameModal(pkg = '', fps = '60') {
   }
 }
 
-// Event bindings
-document.querySelectorAll('.tabbar .tab').forEach(btn => {
-  btn.onclick = () => {
-    document.querySelectorAll('.tabbar .tab').forEach(b => b.classList.remove('active'));
+// Events
+document.querySelectorAll('nav.tabs button').forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll('nav.tabs button').forEach(x => x.classList.remove('active'));
     document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-    btn.classList.add('active');
-    $(btn.dataset.tab).classList.add('active');
+    b.classList.add('active');
+    $(b.dataset.tab).classList.add('active');
   };
 });
 
-document.querySelectorAll('#mode-grid .mode-btn').forEach(btn => {
-  btn.onclick = async () => {
-    try {
-      await ctl('set', 'mode', btn.dataset.mode);
-      toast('已切换至 ' + btn.querySelector('.m-zh').textContent + ' 档位');
-      await refresh(true);
-    } catch (e) { toast('切换失败: ' + e.message); }
+document.querySelectorAll('#mode-grid button').forEach(b => {
+  b.onclick = async () => {
+    try { await ctl('set', 'mode', b.dataset.mode); toast('已切换至 ' + b.textContent); await refresh(true); }
+    catch (e) { toast(e.message); }
   };
 });
 
-const bindSwitch = (id, key, name) => {
+const bindSw = (id, key, name) => {
   $(id).onchange = async e => {
-    const val = e.target.checked ? '1' : '0';
-    try {
-      await ctl('set', key, val);
-      toast(name + (val === '1' ? ' 已开启' : ' 已关闭'));
-      await refresh(true);
-    } catch (err) {
-      e.target.checked = !e.target.checked;
-      toast('设置失败: ' + err.message);
-    }
+    const v = e.target.checked ? '1' : '0';
+    try { await ctl('set', key, v); toast(name + (v === '1' ? ' 已开启' : ' 已关闭')); await refresh(true); }
+    catch (err) { e.target.checked = !e.target.checked; toast(err.message); }
   };
 };
-bindSwitch('sw-enable', 'enable', 'KFAS 总开关');
-bindSwitch('sw-place', 'placement_enable', '精准线程放置');
-bindSwitch('sw-workers', 'contain_workers', '杂线程隔离');
-bindSwitch('sw-unpause', 'unpause_big', '大核/X3 解暂停');
-bindSwitch('sw-daily', 'daily_enable', '日常应用线程加速');
-bindSwitch('sw-dcvs', 'dcvs_enable', 'L3 / DDR 总线 DCVS 协同');
-
-$('btn-vip').onclick = async () => {
-  const v = $('in-vip').value.trim() || '-';
-  try { await ctl('set', 'vip_comms', v); toast('VIP 线程前缀已更新'); await refresh(true); }
-  catch (e) { toast('保存失败: ' + e.message); }
-};
+bindSw('sw-enable', 'enable', 'KFAS');
+bindSw('sw-daily', 'daily_enable', '日常加速');
+bindSw('sw-place', 'placement_enable', '精准放核');
+bindSw('sw-workers', 'contain_workers', '杂线程隔离');
+bindSw('sw-unpause', 'unpause_big', '大核解暂停');
+bindSw('sw-dcvs', 'dcvs_enable', 'L3/DDR 协同');
 
 document.querySelectorAll('#tune-mode-chips .chip').forEach(c => {
   c.onclick = () => {
@@ -1077,84 +959,54 @@ document.querySelectorAll('#tune-mode-chips .chip').forEach(c => {
     c.classList.add('active');
     state.editTuneMode = c.dataset.tmode;
     lastTuneSig = '';
-    renderTuningForm();
+    renderAll();
   };
 });
-
 $('btn-save-tune').onclick = async () => {
-  const mode = state.editTuneMode;
-  const inputs = document.querySelectorAll('#tune-grid input[data-tkey]');
   try {
-    for (const inp of inputs) {
-      const val = inp.value.trim();
-      if (val !== '') await ctl('tune', mode, inp.dataset.tkey, val);
+    for (const inp of document.querySelectorAll('#tune-grid input[data-tkey]')) {
+      if (inp.value.trim() !== '') await ctl('tune', state.editTuneMode, inp.dataset.tkey, inp.value.trim());
     }
-    toast('已应用并持久化 ' + mode + ' 参数');
+    toast('已保存 ' + state.editTuneMode + ' 参数');
     await refresh(true);
-  } catch (e) { toast('参数写入失败: ' + e.message); }
+  } catch (e) { toast(e.message); }
 };
-
 $('btn-reset-tune').onclick = async () => {
-  try { await ctl('reset-tuning'); toast('已清除自定义持久化覆盖（重启后恢复默认）'); }
-  catch (e) { toast('失败: ' + e.message); }
+  try { await ctl('reset-tuning'); toast('已清除覆盖，重启后恢复默认'); } catch (e) { toast(e.message); }
 };
-
+$('btn-vip').onclick = async () => {
+  try { await ctl('set', 'vip_comms', $('in-vip').value.trim() || '-'); toast('已更新 VIP'); await refresh(true); }
+  catch (e) { toast(e.message); }
+};
 $('btn-open-picker').onclick = () => openGameModal('', '60,90,120');
 $('btn-close-modal').onclick = () => $('game-modal').classList.remove('open');
 $('game-modal').onclick = e => { if (e.target === $('game-modal')) $('game-modal').classList.remove('open'); };
 $('app-search').oninput = e => renderPicker(e.target.value);
-
-document.querySelectorAll('#fps-chips .chip').forEach(c => {
-  c.onclick = () => c.classList.toggle('active');
-});
-
 $('btn-save-game').onclick = async () => {
   const pkg = $('edit-pkg').value.trim();
   const fps = [...document.querySelectorAll('#fps-chips .chip.active')].map(c => c.dataset.fps).join(',');
-  if (!pkg) { toast('请先选择或输入包名'); return; }
-  if (!fps) { toast('请至少勾选 1 个目标帧率'); return; }
-  try {
-    await ctl('game-set', pkg, fps);
-    $('game-modal').classList.remove('open');
-    toast('已保存 ' + pkg);
-    await refresh(true);
-  } catch (e) { toast('保存失败: ' + e.message); }
+  if (!pkg || !fps) { toast('请填好包名和帧率'); return; }
+  try { await ctl('game-set', pkg, fps); $('game-modal').classList.remove('open'); toast('已保存'); await refresh(true); }
+  catch (e) { toast(e.message); }
 };
-
 $('btn-probes').onclick = async () => {
-  try { const out = await ctl('resolve-probes'); toast(out.trim() || '探针已更新'); await refresh(true); }
-  catch (e) { toast('解析失败: ' + e.message); }
+  try { toast((await ctl('resolve-probes')).trim() || '探针已更新'); await refresh(true); } catch (e) { toast(e.message); }
 };
 $('btn-restart-w').onclick = async () => {
-  try { await ctl('restart-watcher'); toast('前台哨兵已重启'); await refresh(true); }
-  catch (e) { toast('重启失败: ' + e.message); }
+  try { await ctl('restart-watcher'); toast('哨兵已重启'); await refresh(true); } catch (e) { toast(e.message); }
 };
 $('btn-detach').onclick = async () => {
-  try { await ctl('detach'); toast('已释放当前会话'); await refresh(true); }
-  catch (e) { toast('操作失败: ' + e.message); }
+  try { await ctl('detach'); toast('已断开会话'); await refresh(true); } catch (e) { toast(e.message); }
 };
-
 $('btn-refresh').onclick = () => refresh(false);
 $('btn-live').onclick = () => {
   if (liveTimer) {
-    clearInterval(liveTimer); liveTimer = null;
-    $('btn-live').classList.remove('active');
-    toast('已停止实时刷新');
+    clearInterval(liveTimer); liveTimer = null; $('btn-live').classList.remove('on');
   } else {
-    liveTimer = setInterval(() => refresh(true), 1500);
-    $('btn-live').classList.add('active');
-    toast('已开启 1.5s 实时监测');
-    refresh(true);
+    liveTimer = setInterval(() => { if (!document.hidden) refresh(true); }, 1500); $('btn-live').classList.add('on'); refresh(true);
   }
 };
-$('btn-theme').onclick = () => {
-  const order = ['system', 'dark', 'light'];
-  state.theme = order[(order.indexOf(state.theme) + 1) % order.length];
-  localStorage.setItem('kfas.theme', state.theme);
-  applyTheme();
-};
 
-applyTheme();
 refresh(false);
 </script>
 </body>
