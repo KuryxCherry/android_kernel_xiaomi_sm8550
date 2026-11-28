@@ -283,6 +283,15 @@ static inline bool need_active_lb(struct task_struct *p, int dst_cpu,
 	if (!wts->misfit)
 		return false;
 
+	/*
+	 * If the sleeping task on the dst_cpu and the task for which we are
+	 * doing active load balance are pipeline tasks, don't do active load
+	 * balance so we don't collide two pipeline tasks on the same cpu.
+	 */
+	if (walt_pipeline_low_latency_task(p) &&
+	    walt_pipeline_low_latency_task(cpu_rq(dst_cpu)->curr))
+		return false;
+
 	return true;
 }
 

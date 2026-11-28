@@ -986,7 +986,8 @@ int walt_find_energy_efficient_cpu(struct task_struct *p, int prev_cpu,
 			cpu_active(pipeline_cpu) &&
 			!cpu_halted(pipeline_cpu) &&
 			!ignore_cluster[cpu_cluster(pipeline_cpu)->id]) {
-		if (!walt_pipeline_low_latency_task(cpu_rq(pipeline_cpu)->curr)) {
+		if ((p == cpu_rq(pipeline_cpu)->curr) ||
+			!walt_pipeline_low_latency_task(cpu_rq(pipeline_cpu)->curr)) {
 			best_energy_cpu = pipeline_cpu;
 			fbt_env.fastpath = PIPELINE_FASTPATH;
 			goto out;
